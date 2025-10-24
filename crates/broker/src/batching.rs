@@ -41,6 +41,10 @@ impl MessageBatch {
         self.messages.is_empty()
     }
 
+    pub fn get_messages(&self) -> &Vec<PublishRequest> {
+        &self.messages
+    }
+
     pub fn take_messages(&mut self) -> Vec<PublishRequest> {
         std::mem::take(&mut self.messages)
     }

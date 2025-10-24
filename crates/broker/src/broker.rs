@@ -17,6 +17,9 @@ use rafka_storage::db::{Storage, RetentionPolicy, StorageMetrics};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 use std::time::Duration;
+use crate::batching::BatchedProcessor;
+use rafka_core::zero_copy::ZeroCopyProcessor;
+use rafka_core::memory_pool::{MessagePool, OptimizedMessage};
 
 pub struct Broker {
     topics: Arc<RwLock<HashMap<String, HashSet<String>>>>,
@@ -27,6 +30,9 @@ pub struct Broker {
     total_partitions: u32,
     storage: Arc<Storage>,
     consumer_offsets: Arc<RwLock<HashMap<(String, String), i64>>>,
+    batcher: Arc<BatchedProcessor>,
+    zero_copy_processor: Arc<ZeroCopyProcessor>,
+    message_pool: Arc<MessagePool<OptimizedMessage>>,
 }
 
 impl Broker {
@@ -38,6 +44,15 @@ impl Broker {
             retention_policy.unwrap_or_default()
         ));
         
+        // Initialize message batcher for performance optimization
+        let batcher = Arc::new(BatchedProcessor::new(100, Duration::from_millis(10)));
+        
+        // Initialize zero-copy processor for efficient message handling
+        let zero_copy_processor = Arc::new(ZeroCopyProcessor::new(1000));
+        
+        // Initialize memory pool for optimized message objects
+        let message_pool = Arc::new(MessagePool::new(1000)); // Pool of 1000 message objects
+        
         Self {
             topics: Arc::new(RwLock::new(HashMap::new())),
             messages: Arc::new(RwLock::new(HashMap::new())),
@@ -47,6 +62,9 @@ impl Broker {
             total_partitions,
             storage,
             consumer_offsets: Arc::new(RwLock::new(HashMap::new())),
+            batcher,
+            zero_copy_processor,
+            message_pool,
         }
     }
 
@@ -61,6 +79,90 @@ impl Broker {
         let (new_tx, _) = broadcast::channel(self.broadcast_capacity);
         channels.insert(partition_id, new_tx.clone());
         new_tx
+    }
+
+    /// Process a single message (fallback when batching fails)
+    async fn process_single_message(&self, req: PublishRequest) -> Result<Response<PublishResponse>, Status> {
+        let message_id = Uuid::new_v4().to_string();
+        let offset = self.message_counter.fetch_add(1, Ordering::SeqCst) as i64;
+
+        let response = ConsumeResponse {
+            message_id: message_id.clone(),
+            topic: req.topic.clone(),
+            payload: req.payload,
+            sent_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+            offset,
+        };
+
+        let sender = self.ensure_channel(self.partition_id).await;
+        if let Err(e) = sender.send(response) {
+            println!("Failed to broadcast message: {}", e);
+        }
+
+        println!("Message published to partition {} with offset {}", self.partition_id, offset);
+        
+        Ok(Response::new(PublishResponse {
+            message_id,
+            success: true,
+            message: format!("Published successfully to partition {} with offset {}", 
+                self.partition_id, offset),
+            partition: self.partition_id as i32,
+            offset,
+        }))
+    }
+
+    /// Process a batch of messages efficiently using zero-copy and memory pooling
+    async fn process_batch(&self, batch: crate::batching::MessageBatch) {
+        let messages = batch.get_messages();
+        if messages.is_empty() {
+            return;
+        }
+
+        println!("Processing batch of {} messages with zero-copy and memory pooling", messages.len());
+        
+        // Use zero-copy processing for the batch
+        let message_payloads: Vec<bytes::Bytes> = messages.iter()
+            .map(|req| bytes::Bytes::from(req.payload.clone()))
+            .collect();
+        let processed_messages = self.zero_copy_processor.process_batch(&message_payloads).await;
+        
+        let sender = self.ensure_channel(self.partition_id).await;
+        
+        for (req, processed_payload) in messages.iter().zip(processed_messages.iter()) {
+            // Get optimized message object from pool
+            let mut pooled_message = self.message_pool.get().await;
+            let optimized_msg = pooled_message.get_mut();
+            
+            // Populate the pooled message
+            optimized_msg.id = Uuid::new_v4().to_string();
+            optimized_msg.topic = req.topic.clone();
+            optimized_msg.payload = processed_payload.to_vec(); // Convert Bytes to Vec<u8>
+            optimized_msg.timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            optimized_msg.partition = self.partition_id;
+            optimized_msg.offset = self.message_counter.fetch_add(1, Ordering::SeqCst) as i64;
+
+            let response = ConsumeResponse {
+                message_id: optimized_msg.id.clone(),
+                topic: optimized_msg.topic.clone(),
+                payload: String::from_utf8_lossy(&processed_payload).to_string(), // Convert Bytes to String
+                sent_at: optimized_msg.timestamp as i64,
+                offset: optimized_msg.offset,
+            };
+
+            if let Err(e) = sender.send(response) {
+                println!("Failed to broadcast message in batch: {}", e);
+            }
+            
+            // Pooled message will be automatically returned to pool when dropped
+        }
+        
+        println!("Batch processed successfully with zero-copy and memory pooling optimization");
     }
 
     pub async fn shutdown(&self) {
@@ -160,32 +262,26 @@ impl BrokerService for Broker {
 
         self.ensure_topic(&req.topic).await;
         
-        let message_id = Uuid::new_v4().to_string();
-        let offset = self.message_counter.fetch_add(1, Ordering::SeqCst) as i64;
-
-        let response = ConsumeResponse {
-            message_id: message_id.clone(),
-            topic: req.topic.clone(),
-            payload: req.payload,
-            sent_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
-            offset,
-        };
-
-        let sender = self.ensure_channel(self.partition_id).await;
-        if let Err(e) = sender.send(response) {
-            println!("Failed to broadcast message: {}", e);
+        // Add message to batcher for performance optimization
+        if let Err(e) = self.batcher.add_message(req.clone()).await {
+            println!("Failed to add message to batcher: {}", e);
+            // Fall back to immediate processing
+            return self.process_single_message(req).await;
         }
 
-        println!("Message published to partition {} with offset {}", self.partition_id, offset);
+        // Process any ready batches
+        let ready_batches = self.batcher.get_ready_batches().await;
+        for batch in ready_batches {
+            self.process_batch(batch).await;
+        }
+        
+        let message_id = Uuid::new_v4().to_string();
+        let offset = self.message_counter.fetch_add(1, Ordering::SeqCst) as i64;
         
         Ok(Response::new(PublishResponse {
             message_id,
             success: true,
-            message: format!("Published successfully to partition {} with offset {}", 
-                self.partition_id, offset),
+            message: format!("Message queued for batch processing"),
             partition: self.partition_id as i32,
             offset,
         }))
