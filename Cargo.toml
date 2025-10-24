@@ -15,6 +15,14 @@ path = "src/bin/start_consumer.rs"
 name = "start_broker"
 path = "src/bin/start_broker.rs"
 
+[[bin]]
+name = "benchmark"
+path = "src/bin/benchmark.rs"
+
+[[bin]]
+name = "metrics_server"
+path = "src/bin/metrics_server.rs"
+
 [dependencies]
 rafka-broker = { path = "crates/broker" }
 rafka-core = { path = "crates/core" }

@@ -1,0 +1,184 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo lock file (uncomment if this is a library crate)
+# Cargo.lock
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+
+# nyc test coverage
+.nyc_output
+
+# Dependency directories
+node_modules/
+
+# Optional npm cache directory
+.npm
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# dotenv environment variables file
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Temporary files
+*.tmp
+*.temp
+/tmp/
+/temp/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Configuration files with sensitive data
+config/local.yml
+config/production.yml
+config/secrets.yml
+*.key
+*.pem
+*.crt
+
+# Docker volumes and data
+docker-data/
+volumes/
+
+# Kubernetes secrets and configs (if they contain sensitive data)
+# Uncomment if you have sensitive k8s configs
+# k8s/secrets/
+# k8s/configmaps/
+
+# Backup files
+*.bak
+*.backup
+
+# Archive files
+*.zip
+*.tar.gz
+*.rar
+
+# Rust specific
+# Remove debug symbols
+*.dSYM/
+
+# Profiling data
+*.prof
+
+# Benchmark results
+bench-results/
+criterion/
+
+# Documentation build
+/book/
+
+# Generated protobuf files (if you generate them)
+# Uncomment if you generate .rs files from .proto
+# crates/core/src/proto/*.rs
+
+# Local development scripts
+local-*.sh
+dev-*.sh
+
+# Performance test results
+perf-results/
+benchmark-results/
+
+# Memory dumps
+*.dump
+core.*
+
+# Rust analyzer cache
+.rust-analyzer/
+
+# Cargo registry cache
+.cargo/
+
+# Local test data
+test-data/
+sample-data/
+
+# Metrics and monitoring data
+metrics-data/
+monitoring-data/
+
+# Local certificates
+*.p12
+*.pfx
+
+# JetBrains IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Atom
+.ftpconfig
+.sftpconfig
+
+# Visual Studio Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json

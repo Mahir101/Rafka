@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  rafka-broker-1:
+    build: .
+    command: ["./start_broker", "--port", "50051", "--partition", "0", "--total-partitions", "3"]
+    ports:
+      - "50051:50051"
+    environment:
+      - RUST_LOG=info
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "50051"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  rafka-broker-2:
+    build: .
+    command: ["./start_broker", "--port", "50052", "--partition", "1", "--total-partitions", "3"]
+    ports:
+      - "50052:50052"
+    environment:
+      - RUST_LOG=info
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "50052"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  rafka-broker-3:
+    build: .
+    command: ["./start_broker", "--port", "50053", "--partition", "2", "--total-partitions", "3"]
+    ports:
+      - "50053:50053"
+    environment:
+      - RUST_LOG=info
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "50053"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  rafka-producer:
+    build: .
+    command: ["./start_producer", "--brokers", "rafka-broker-1:50051", "--message", "Hello from Docker Compose!", "--key", "docker-key"]
+    depends_on:
+      - rafka-broker-1
+    environment:
+      - RUST_LOG=info
+
+  rafka-consumer:
+    build: .
+    command: ["./start_consumer", "--port", "50051"]
+    depends_on:
+      - rafka-broker-1
+    environment:
+      - RUST_LOG=info
+
+networks:
+  default:
+    name: rafka-network

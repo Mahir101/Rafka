@@ -1,35 +1,59 @@
-# Use the official Rust image with Alpine (use rust:alpine or a specific version like rust:1.82-alpine)
-FROM rust:alpine as builder
+# Multi-stage build for Rafka
+FROM rust:1.75-slim as builder
 
-# Install necessary dependencies for building the Rust project
-RUN apk add --no-cache musl-dev
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Set the working directory inside the container
-WORKDIR /usr/src/rafka
+# Set working directory
+WORKDIR /app
 
-# Copy the source code into the container
-COPY . .
+# Copy Cargo files
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ ./crates/
+
+# Build dependencies first (for better caching)
+RUN cargo build --release --bin start_broker --bin start_producer --bin start_consumer
+
+# Copy source code
+COPY src/ ./src/
 
 # Build the application
-RUN cargo build --release --target x86_64-unknown-linux-musl
+RUN cargo build --release
 
+# Runtime stage
+FROM debian:bookworm-slim
 
-# Create a smaller final image based on Alpine
-FROM alpine:latest
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install necessary runtime dependencies (using libssl3 instead of libssl1.1)
-RUN apk add --no-cache \
-    libssl3 \
-    ca-certificates
+# Create app user
+RUN useradd -r -s /bin/false appuser
 
+# Set working directory
+WORKDIR /app
 
-# Set the working directory
-WORKDIR /usr/local/bin
+# Copy binaries from builder stage
+COPY --from=builder /app/target/release/start_broker /app/
+COPY --from=builder /app/target/release/start_producer /app/
+COPY --from=builder /app/target/release/start_consumer /app/
 
-# Copy the built executable from the builder image
-COPY --from=builder /usr/src/rafka/target/x86_64-unknown-linux-musl/release/rafka /usr/local/bin/rafka
+# Copy config
+COPY config/ ./config/
 
-EXPOSE 8080
+# Change ownership
+RUN chown -R appuser:appuser /app
 
-# Run the application
-CMD ["/usr/local/bin/rafka"]
+# Switch to non-root user
+USER appuser
+
+# Expose ports
+EXPOSE 50051 9092
+
+# Default command
+CMD ["./start_broker"]

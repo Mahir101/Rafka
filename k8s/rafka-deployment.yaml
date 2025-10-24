@@ -1,0 +1,195 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rafka
+  labels:
+    name: rafka
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rafka-config
+  namespace: rafka
+data:
+  config.yml: |
+    server:
+      host: "0.0.0.0"
+      port: 9092
+    
+    log:
+      level: "info"
+    
+    broker:
+      replication_factor: 3
+      default_topic_partitions: 3
+    
+    storage:
+      type: "in_memory"
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rafka-broker
+  namespace: rafka
+spec:
+  serviceName: rafka-broker
+  replicas: 3
+  selector:
+    matchLabels:
+      app: rafka-broker
+  template:
+    metadata:
+      labels:
+        app: rafka-broker
+    spec:
+      containers:
+      - name: rafka-broker
+        image: rafka:latest
+        ports:
+        - containerPort: 50051
+          name: grpc
+        - containerPort: 9092
+          name: metrics
+        env:
+        - name: BROKER_PARTITION
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: BROKER_PORT
+          value: "50051"
+        - name: TOTAL_PARTITIONS
+          value: "3"
+        - name: RETENTION_SECONDS
+          value: "604800"
+        command: ["/app/start_broker"]
+        args: 
+        - "--port"
+        - "50051"
+        - "--partition"
+        - "$(BROKER_PARTITION)"
+        - "--total-partitions"
+        - "3"
+        - "--retention-seconds"
+        - "604800"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/config
+        livenessProbe:
+          tcpSocket:
+            port: 50051
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 50051
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: config-volume
+        configMap:
+          name: rafka-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rafka-broker
+  namespace: rafka
+spec:
+  selector:
+    app: rafka-broker
+  ports:
+  - name: grpc
+    port: 50051
+    targetPort: 50051
+  - name: metrics
+    port: 9092
+    targetPort: 9092
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rafka-broker-headless
+  namespace: rafka
+spec:
+  selector:
+    app: rafka-broker
+  ports:
+  - name: grpc
+    port: 50051
+    targetPort: 50051
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rafka-producer
+  namespace: rafka
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rafka-producer
+  template:
+    metadata:
+      labels:
+        app: rafka-producer
+    spec:
+      containers:
+      - name: rafka-producer
+        image: rafka:latest
+        command: ["/app/start_producer"]
+        args:
+        - "--brokers"
+        - "rafka-broker:50051"
+        - "--message"
+        - "Hello from Kubernetes!"
+        - "--key"
+        - "k8s-key"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rafka-consumer
+  namespace: rafka
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rafka-consumer
+  template:
+    metadata:
+      labels:
+        app: rafka-consumer
+    spec:
+      containers:
+      - name: rafka-consumer
+        image: rafka:latest
+        command: ["/app/start_consumer"]
+        args:
+        - "--port"
+        - "50051"
+        env:
+        - name: BROKER_SERVICE
+          value: "rafka-broker:50051"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"

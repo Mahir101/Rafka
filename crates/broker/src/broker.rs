@@ -31,7 +31,8 @@ pub struct Broker {
 
 impl Broker {
     pub fn new(partition_id: u32, total_partitions: u32, retention_policy: Option<RetentionPolicy>) -> Self {
-        const BROADCAST_CAPACITY: usize = 1024 * 16;
+        // Optimized buffer size for better performance
+        const BROADCAST_CAPACITY: usize = 1024 * 64; // Increased from 16KB to 64KB
         
         let storage = Arc::new(Storage::with_retention_policy(
             retention_policy.unwrap_or_default()
