@@ -1,0 +1,15 @@
+# Default configuration for Rafka
+
+server:
+  host: "127.0.0.1"
+  port: 9092
+
+log:
+  level: "info"  # Logging level: can be "debug", "info", "warn", "error"
+
+broker:
+  replication_factor: 3
+  default_topic_partitions: 1
+
+storage:
+  type: "in_memory"  # Options could include "in_memory", "rocksdb", etc.

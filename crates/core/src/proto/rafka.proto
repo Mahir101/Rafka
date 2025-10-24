@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package rafka;
+
+service BrokerService {
+    rpc Publish(PublishRequest) returns (PublishResponse);
+    rpc Consume(ConsumeRequest) returns (stream ConsumeResponse);
+    rpc Acknowledge(AcknowledgeRequest) returns (AcknowledgeResponse);
+    rpc Register(RegisterRequest) returns (RegisterResponse);
+    rpc Subscribe(SubscribeRequest) returns (SubscribeResponse);
+    rpc UpdateOffset(UpdateOffsetRequest) returns (UpdateOffsetResponse);
+    rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse);
+}
+
+message PublishRequest {
+    string producer_id = 1;
+    string topic = 2;
+    string key = 3;
+    string payload = 4;
+}
+
+message PublishResponse {
+    string message_id = 1;
+    bool success = 2;
+    string message = 3;
+    int32 partition = 4;
+    int64 offset = 5;
+}
+
+message ConsumeRequest {
+    string id = 1;
+    string topic = 2;
+}
+
+message ConsumeResponse {
+    string message_id = 1;
+    string topic = 2;
+    string payload = 3;
+    int64 sent_at = 4;
+    int64 offset = 5;
+}
+
+message AcknowledgeRequest {
+    string consumer_id = 1;
+    string message_id = 2;
+    string topic = 3;
+}
+
+message AcknowledgeResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message RegisterRequest {
+    string client_id = 1;
+    ClientType client_type = 2;
+}
+
+message RegisterResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message SubscribeRequest {
+    string consumer_id = 1;
+    string topic = 2;
+}
+
+message SubscribeResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message UpdateOffsetRequest {
+    string consumer_id = 1;
+    string topic = 2;
+    int64 offset = 3;
+}
+
+message UpdateOffsetResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message GetMetricsRequest {}
+
+message GetMetricsResponse {
+    uint64 total_messages = 1;
+    uint64 total_bytes = 2;
+    uint64 oldest_message_age_secs = 3;
+}
+
+enum ClientType {
+    UNKNOWN = 0;
+    PRODUCER = 1;
+    CONSUMER = 2;
+}

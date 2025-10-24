@@ -1,0 +1,36 @@
+[package]
+name = "rafka"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "start_producer"
+path = "src/bin/start_producer.rs"
+
+[[bin]]
+name = "start_consumer"
+path = "src/bin/start_consumer.rs"
+
+[[bin]]
+name = "start_broker"
+path = "src/bin/start_broker.rs"
+
+[dependencies]
+rafka-broker = { path = "crates/broker" }
+rafka-core = { path = "crates/core" }
+rafka-producer = { path = "crates/producer" }
+rafka-consumer = { path = "crates/consumer" }
+rafka-storage = { path = "crates/storage" }
+tokio = { version = "1.0", features = ["full"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[workspace]
+members = [
+    "crates/broker",
+    "crates/core",
+    "crates/producer",
+    "crates/consumer",
+    "crates/storage"
+]
+
+
