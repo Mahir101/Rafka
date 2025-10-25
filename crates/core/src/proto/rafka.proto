@@ -10,6 +10,12 @@ service BrokerService {
     rpc Subscribe(SubscribeRequest) returns (SubscribeResponse);
     rpc UpdateOffset(UpdateOffsetRequest) returns (UpdateOffsetResponse);
     rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse);
+    
+    // Broker-to-broker communication
+    rpc ForwardMessage(ForwardMessageRequest) returns (ForwardMessageResponse);
+    rpc GetClusterInfo(GetClusterInfoRequest) returns (GetClusterInfoResponse);
+    rpc JoinCluster(JoinClusterRequest) returns (JoinClusterResponse);
+    rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
 }
 
 message PublishRequest {
@@ -94,4 +100,63 @@ enum ClientType {
     UNKNOWN = 0;
     PRODUCER = 1;
     CONSUMER = 2;
+}
+
+// Broker-to-broker communication messages
+message ForwardMessageRequest {
+    string from_broker_id = 1;
+    string topic = 2;
+    string key = 3;
+    string payload = 4;
+    int32 target_partition = 5;
+    int64 offset = 6;
+}
+
+message ForwardMessageResponse {
+    bool success = 1;
+    string message = 2;
+    int64 offset = 3;
+}
+
+message BrokerInfo {
+    string broker_id = 1;
+    string address = 2;
+    int32 port = 3;
+    int32 partition_id = 4;
+    int32 total_partitions = 5;
+    bool is_healthy = 6;
+}
+
+message GetClusterInfoRequest {
+    string requesting_broker_id = 1;
+}
+
+message GetClusterInfoResponse {
+    repeated BrokerInfo brokers = 1;
+    int32 cluster_size = 2;
+    string cluster_id = 3;
+}
+
+message JoinClusterRequest {
+    string broker_id = 1;
+    string address = 2;
+    int32 port = 3;
+    int32 partition_id = 4;
+    int32 total_partitions = 5;
+}
+
+message JoinClusterResponse {
+    bool success = 1;
+    string message = 2;
+    repeated BrokerInfo existing_brokers = 3;
+}
+
+message HealthCheckRequest {
+    string broker_id = 1;
+}
+
+message HealthCheckResponse {
+    bool healthy = 1;
+    string status = 2;
+    int64 timestamp = 3;
 }

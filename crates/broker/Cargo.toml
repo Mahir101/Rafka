@@ -16,3 +16,4 @@ chrono = { version = "0.4", features = ["serde"] }
 prost-types = "0.11"
 rafka-storage = { path = "../storage" }
 bytes = "1.4"
+serde_yaml = "0.9"

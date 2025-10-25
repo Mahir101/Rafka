@@ -1,0 +1,22 @@
+cluster_id: "rafka-cluster"
+health_check_interval_ms: 5000
+connection_timeout_ms: 3000
+
+brokers:
+  - broker_id: "broker-1"
+    address: "127.0.0.1"
+    port: 50051
+    partition_id: 0
+    total_partitions: 3
+    
+  - broker_id: "broker-2"
+    address: "127.0.0.1"
+    port: 50052
+    partition_id: 1
+    total_partitions: 3
+    
+  - broker_id: "broker-3"
+    address: "127.0.0.1"
+    port: 50053
+    partition_id: 2
+    total_partitions: 3
