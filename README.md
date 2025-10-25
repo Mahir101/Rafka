@@ -1,4 +1,4 @@
-# kRafka
+# Rafka
 
 **A High-Performance Distributed Message Broker Built in Rust**
 
@@ -174,7 +174,7 @@ cargo run --bin start_consumer -- --port 50051
 
 3. **Send messages**:
 ```bash
-cargo run --bin start_producer -- --message "Hello, kRafka!" --key "test-key"
+cargo run --bin start_producer -- --message "Hello, Rafka!" --key "test-key"
 ```
 
 ## 🔧 Configuration
@@ -343,7 +343,7 @@ graph LR
 
 ### Partitioning Strategy
 
-kRafka uses hash-based partitioning for efficient message distribution:
+Rafka uses hash-based partitioning for efficient message distribution:
 
 ```rust
 fn hash_key(&self, key: &str) -> u32 {
@@ -439,7 +439,7 @@ The project follows Rust best practices with:
 
 **⚠️ Early Development - Not Production Ready**
 
-kRafka is currently in active development. The current implementation provides:
+Rafka is currently in active development. The current implementation provides:
 
 ✅ **Completed Features**:
 - Basic message publishing and consumption
