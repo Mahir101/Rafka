@@ -2,6 +2,11 @@
 name = "rafka-broker"
 version = "0.1.0"
 edition = "2021"
+description = "Broker implementation for Rafka message broker"
+license = "Apache-2.0"
+repository = "https://github.com/Mahir101/rafka"
+keywords = ["message-broker", "kafka", "distributed", "messaging"]
+categories = ["network-programming", "asynchronous"]
 
 [dependencies]
 rafka-core = { path = "../core" }

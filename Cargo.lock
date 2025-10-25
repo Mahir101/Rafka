@@ -853,19 +853,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rafka"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "rafka-broker",
- "rafka-consumer",
- "rafka-core",
- "rafka-producer",
- "rafka-storage",
- "tokio",
-]
-
-[[package]]
 name = "rafka-broker"
 version = "0.1.0"
 dependencies = [
@@ -927,6 +914,19 @@ dependencies = [
  "tokio",
  "tonic",
  "uuid",
+]
+
+[[package]]
+name = "rafka-rs"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rafka-broker",
+ "rafka-consumer",
+ "rafka-core",
+ "rafka-producer",
+ "rafka-storage",
+ "tokio",
 ]
 
 [[package]]
