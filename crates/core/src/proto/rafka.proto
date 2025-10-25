@@ -16,6 +16,12 @@ service BrokerService {
     rpc GetClusterInfo(GetClusterInfoRequest) returns (GetClusterInfoResponse);
     rpc JoinCluster(JoinClusterRequest) returns (JoinClusterResponse);
     rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+    
+    // P2P Mesh networking
+    rpc GossipMessage(GossipMessageRequest) returns (GossipMessageResponse);
+    rpc GetMeshTopology(GetMeshTopologyRequest) returns (GetMeshTopologyResponse);
+    rpc JoinMesh(JoinMeshRequest) returns (JoinMeshResponse);
+    rpc LeaveMesh(LeaveMeshRequest) returns (LeaveMeshResponse);
 }
 
 message PublishRequest {
@@ -159,4 +165,72 @@ message HealthCheckResponse {
     bool healthy = 1;
     string status = 2;
     int64 timestamp = 3;
+}
+
+// P2P Mesh networking messages
+message GossipMessageRequest {
+    string from_node_id = 1;
+    GossipMessageType message_type = 2;
+    int64 timestamp = 3;
+    int32 ttl = 4;
+}
+
+message GossipMessageResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message GetMeshTopologyRequest {
+    string requesting_node_id = 1;
+}
+
+message GetMeshTopologyResponse {
+    repeated MeshNodeInfo nodes = 1;
+    map<int32, string> partition_owners = 2;
+    int32 cluster_size = 3;
+}
+
+message JoinMeshRequest {
+    string node_id = 1;
+    string address = 2;
+    int32 port = 3;
+    int32 partition_id = 4;
+    int32 total_partitions = 5;
+    repeated string bootstrap_nodes = 6;
+}
+
+message JoinMeshResponse {
+    bool success = 1;
+    string message = 2;
+    repeated MeshNodeInfo existing_nodes = 3;
+}
+
+message LeaveMeshRequest {
+    string node_id = 1;
+}
+
+message LeaveMeshResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message MeshNodeInfo {
+    string node_id = 1;
+    string address = 2;
+    int32 port = 3;
+    int32 partition_id = 4;
+    int32 total_partitions = 5;
+    bool is_alive = 6;
+    int64 last_seen_timestamp = 7;
+    map<string, string> metadata = 8;
+}
+
+enum GossipMessageType {
+    UNKNOWN_GOSSIP = 0;
+    NODE_JOIN = 1;
+    NODE_LEAVE = 2;
+    NODE_UPDATE = 3;
+    HEARTBEAT = 4;
+    PARTITION_UPDATE = 5;
+    CLUSTER_STATE = 6;
 }

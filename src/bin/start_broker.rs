@@ -35,6 +35,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|i| args.get(i + 1))
         .map(|s| s.to_string());
 
+    let bootstrap_nodes: Vec<String> = args.iter()
+        .position(|arg| arg == "--bootstrap")
+        .and_then(|i| args.get(i + 1))
+        .map(|nodes| nodes.split(',').map(|s| s.to_string()).collect())
+        .unwrap_or_default();
+
     let retention_policy = retention_secs.map(|secs| RetentionPolicy {
         max_age: secs,
         max_bytes: 1024 * 1024 * 1024, // 1GB default
@@ -53,6 +59,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     } else {
         println!("No cluster configuration provided. Running in standalone mode.");
+    }
+    
+    // Initialize P2P mesh networking
+    if !bootstrap_nodes.is_empty() {
+        println!("🌐 Initializing P2P mesh with bootstrap nodes: {:?}", bootstrap_nodes);
+        if let Err(e) = broker.initialize_p2p_mesh(bootstrap_nodes).await {
+            println!("Warning: Failed to initialize P2P mesh: {}", e);
+        }
+    } else {
+        println!("🌐 Initializing P2P mesh in standalone mode");
+        if let Err(e) = broker.initialize_p2p_mesh(vec![]).await {
+            println!("Warning: Failed to initialize P2P mesh: {}", e);
+        }
     }
     
     broker.serve(&format!("127.0.0.1:{}", port)).await?;
