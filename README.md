@@ -1,8 +1,8 @@
-# Rafka
+# kRafka
 
 **A High-Performance Distributed Message Broker Built in Rust**
 
-Rafka is a blazing-fast, experimental distributed asynchronous message broker inspired by Apache Kafka. Built with Rust and leveraging Tokio's async runtime, it delivers exceptional performance through its peer-to-peer mesh architecture and custom in-memory database for unparalleled scalability and low-latency message processing.
+kRafka is a blazing-fast, experimental distributed asynchronous message broker inspired by Apache Kafka. Built with Rust and leveraging Tokio's async runtime, it delivers exceptional performance through its peer-to-peer mesh architecture and custom in-memory database for unparalleled scalability and low-latency message processing.
 
 ## 🚀 Key Features
 
@@ -174,7 +174,7 @@ cargo run --bin start_consumer -- --port 50051
 
 3. **Send messages**:
 ```bash
-cargo run --bin start_producer -- --message "Hello, Rafka!" --key "test-key"
+cargo run --bin start_producer -- --message "Hello, kRafka!" --key "test-key"
 ```
 
 ## 🔧 Configuration
@@ -343,7 +343,7 @@ graph LR
 
 ### Partitioning Strategy
 
-Rafka uses hash-based partitioning for efficient message distribution:
+kRafka uses hash-based partitioning for efficient message distribution:
 
 ```rust
 fn hash_key(&self, key: &str) -> u32 {
@@ -439,7 +439,7 @@ The project follows Rust best practices with:
 
 **⚠️ Early Development - Not Production Ready**
 
-Rafka is currently in active development. The current implementation provides:
+kRafka is currently in active development. The current implementation provides:
 
 ✅ **Completed Features**:
 - Basic message publishing and consumption
