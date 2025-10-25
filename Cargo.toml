@@ -24,21 +24,21 @@ name = "metrics_server"
 path = "src/bin/metrics_server.rs"
 
 [dependencies]
-rafka-broker = { path = "crates/broker" }
-rafka-core = { path = "crates/core" }
-rafka-producer = { path = "crates/producer" }
-rafka-consumer = { path = "crates/consumer" }
-rafka-storage = { path = "crates/storage" }
+rafka-broker = "0.1.0"
+rafka-core = "0.1.0"
+rafka-producer = "0.1.0"
+rafka-consumer = "0.1.0"
+rafka-storage = "0.1.0"
 tokio = { version = "1.0", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
 
-[workspace]
-members = [
-    "crates/broker",
-    "crates/core",
-    "crates/producer",
-    "crates/consumer",
-    "crates/storage"
-]
+# [workspace]
+# members = [
+#     "crates/broker",
+#     "crates/core",
+#     "crates/producer",
+#     "crates/consumer",
+#     "crates/storage"
+# ]
 
 
