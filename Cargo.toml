@@ -2,30 +2,38 @@
 name = "rafka-rs"
 version = "0.1.0"
 edition = "2021"
+description = "Rafka - A high-performance distributed message broker written in Rust"
+license = "Apache-2.0"
+repository = "https://github.com/Mahir101/Rafka"
+keywords = ["message-broker", "kafka", "distributed", "messaging", "p2p", "mesh"]
+categories = ["network-programming", "asynchronous"]
+homepage = "https://github.com/Mahir101/Rafka"
+documentation = "https://docs.rs/rafka-rs"
+readme = "README.md"
 
-[[bin]]
-name = "start_producer"
-path = "src/bin/start_producer.rs"
+# [[bin]]
+# name = "start_producer"
+# path = "src/bin/start_producer.rs"
 
-[[bin]]
-name = "start_consumer"
-path = "src/bin/start_consumer.rs"
+# [[bin]]
+# name = "start_consumer"
+# path = "src/bin/start_consumer.rs"
 
-[[bin]]
-name = "start_broker"
-path = "src/bin/start_broker.rs"
+# [[bin]]
+# name = "start_broker"
+# path = "src/bin/start_broker.rs"
 
-[[bin]]
-name = "benchmark"
-path = "src/bin/benchmark.rs"
+# [[bin]]
+# name = "benchmark"
+# path = "src/bin/benchmark.rs"
 
-[[bin]]
-name = "metrics_server"
-path = "src/bin/metrics_server.rs"
+# [[bin]]
+# name = "metrics_server"
+# path = "src/bin/metrics_server.rs"
 
 [dependencies]
-rafka-broker = "0.1.0"
 rafka-core = "0.1.0"
+rafka-broker = "0.1.0"
 rafka-producer = "0.1.0"
 rafka-consumer = "0.1.0"
 rafka-storage = "0.1.0"
