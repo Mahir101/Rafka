@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use std::net::SocketAddr;
 use tonic::Request;
-use crate::proto::rafka::{broker_service_client::BrokerServiceClient, GetMeshTopologyRequest};
+use crate::proto::rafka::{
+    broker_service_client::BrokerServiceClient,
+    GetMeshTopologyRequest,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct NodeId(pub String);
@@ -252,33 +255,83 @@ impl P2PMesh {
             }
         });
         
-        // Gossip processing task
+        // Topology synchronization task - periodically exchange topology with known nodes
         let topology = self.topology.clone();
-        let gossip_tx = self.gossip_tx.clone();
         let gossip_interval = self.gossip_interval;
         let node_id_gossip = node_id.clone();
-        
+
         tokio::spawn(async move {
             let mut interval = interval(gossip_interval);
             loop {
                 interval.tick().await;
-                
-                // Process incoming gossip messages
-                let topology = topology.write().await;
-                let alive_nodes = topology.get_alive_nodes();
-                
-                // Send cluster state to random neighbors
-                if !alive_nodes.is_empty() {
-                    let cluster_state = GossipMessage {
-                        from_node: node_id_gossip.clone(),
-                        message_type: GossipMessageType::ClusterState(
-                            alive_nodes.iter().cloned().cloned().collect()
-                        ),
-                        timestamp: SystemTime::now(),
-                        ttl: 2,
-                    };
-                    
-                    let _ = gossip_tx.send(cluster_state);
+
+                // Get current topology
+                let known_nodes: Vec<NodeInfo> = {
+                    let topology_read = topology.read().await;
+                    topology_read.nodes.values().cloned().collect()
+                };
+
+                // Send our topology to a few known nodes (simple gossip)
+                for node in known_nodes.iter().take(2) {
+                    if node.id != node_id_gossip {
+                        println!("🔄 Syncing topology to node {} at {}", node.id.0, node.address);
+                        // Send topology sync via gRPC
+                        let endpoint = format!("http://{}", node.address);
+                        if let Ok(mut client) = BrokerServiceClient::connect(endpoint).await {
+                            let request = GetMeshTopologyRequest {
+                                requesting_node_id: node_id_gossip.0.clone(),
+                            };
+
+                            if let Ok(response) = client.get_mesh_topology(Request::new(request)).await {
+                                let remote_topology = response.into_inner();
+                                println!("📥 Received topology sync from {}: {} nodes, {} partitions",
+                                    node.address, remote_topology.nodes.len(), remote_topology.partition_owners.len());
+
+                                // Debug: print what we're receiving
+                                for (pid, owner) in &remote_topology.partition_owners {
+                                    println!("  📍 Remote partition {} owned by {}", pid, owner);
+                                }
+                                for node_info in &remote_topology.nodes {
+                                    println!("  🖥️ Remote node {} at {}:{}", node_info.node_id, node_info.address, node_info.port);
+                                }
+
+                                // Update our topology with remote information
+                                let mut topology_write = topology.write().await;
+
+                                // Add partition ownerships from remote node
+                                for (partition_id, owner_id) in remote_topology.partition_owners {
+                                    let was_updated = !topology_write.partitions.contains_key(&(partition_id as u32));
+                                    let owner_id_clone = owner_id.clone();
+                                    topology_write.partitions.insert(partition_id as u32, NodeId::from_string(owner_id));
+                                    if was_updated {
+                                        println!("📍 Updated partition {} ownership to {}", partition_id, owner_id_clone);
+                                    }
+                                }
+
+                                // Add ALL nodes from remote topology (including ourselves - this helps with address resolution)
+                                for remote_node in remote_topology.nodes {
+                                    // Skip if we already know about this node
+                                    if !topology_write.nodes.contains_key(&NodeId::from_string(remote_node.node_id.clone())) {
+                                        let node_info = NodeInfo {
+                                            id: NodeId::from_string(remote_node.node_id),
+                                            address: format!("{}:{}", remote_node.address, remote_node.port).parse().unwrap_or_else(|_| "127.0.0.1:50051".parse().unwrap()),
+                                            partition_id: remote_node.partition_id as u32,
+                                            total_partitions: remote_node.total_partitions as u32,
+                                            last_seen: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
+                                            is_alive: remote_node.is_alive,
+                                            metadata: remote_node.metadata,
+                                        };
+                                        let node_id = node_info.id.0.clone();
+                                        let node_addr = node_info.address;
+                                        let partition_id = node_info.partition_id;
+                                        topology_write.add_node(node_info);
+                                        println!("🆕 Discovered new node: {} at {} (partition {})",
+                                            node_id, node_addr, partition_id);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -326,6 +379,47 @@ impl P2PMesh {
                 for node_id in stale_nodes {
                     println!("🗑️ Removing stale node: {}", node_id.0);
                     topology.remove_node(&node_id);
+                }
+            }
+        });
+        
+        // Simple gossip forwarding task - forward basic messages
+        let topology_for_gossip = self.topology.clone();
+        let node_id_for_forward = self.node_id.clone();
+        let gossip_rx = self.gossip_tx.subscribe();
+
+        tokio::spawn(async move {
+            let mut gossip_recv = gossip_rx;
+
+            while let Ok(message) = gossip_recv.recv().await {
+                // Skip if message is from us
+                if message.from_node == node_id_for_forward {
+                    continue;
+                }
+
+                // Skip if TTL expired
+                if message.ttl == 0 {
+                    continue;
+                }
+
+                // For now, just forward to all known nodes (simple flooding)
+                // In a real implementation, we'd use more sophisticated routing
+                let topology_read = topology_for_gossip.read().await;
+                let all_nodes: Vec<_> = topology_read.nodes.values().collect();
+
+                for neighbor in all_nodes.iter().take(2) { // Limit to prevent excessive forwarding
+                    if neighbor.id == message.from_node || neighbor.id == node_id_for_forward {
+                        continue;
+                    }
+
+                    let endpoint = format!("http://{}", neighbor.address);
+                    if let Ok(mut client) = BrokerServiceClient::connect(endpoint).await {
+                        // For complex messages, just trigger topology sync instead
+                        let request = GetMeshTopologyRequest {
+                            requesting_node_id: node_id_for_forward.0.clone(),
+                        };
+                        let _ = client.get_mesh_topology(Request::new(request)).await;
+                    }
                 }
             }
         });
@@ -387,9 +481,29 @@ impl P2PMesh {
             Ok(response) => {
                 let topology = response.into_inner();
                 println!("📊 Received cluster state from {}: {} nodes", bootstrap_addr, topology.cluster_size);
-                
+
                 // Process the received topology
                 let mut local_topology = self.topology.write().await;
+
+                // Add nodes from bootstrap node
+                for remote_node in topology.nodes {
+                    if !local_topology.nodes.contains_key(&NodeId::from_string(remote_node.node_id.clone())) {
+                        let node_info = NodeInfo {
+                            id: NodeId::from_string(remote_node.node_id.clone()),
+                            address: format!("{}:{}", remote_node.address, remote_node.port).parse().unwrap_or_else(|_| bootstrap_addr),
+                            partition_id: remote_node.partition_id as u32,
+                            total_partitions: remote_node.total_partitions as u32,
+                            last_seen: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
+                            is_alive: remote_node.is_alive,
+                            metadata: remote_node.metadata,
+                        };
+                        let node_addr = node_info.address;
+                        local_topology.add_node(node_info);
+                        println!("🆕 Bootstrapped node: {} at {} (partition {})",
+                            remote_node.node_id, node_addr, remote_node.partition_id);
+                    }
+                }
+
                 for (partition_id, owner_id) in topology.partition_owners {
                     println!("📍 Learned partition {} is owned by {}", partition_id, owner_id);
                     local_topology.partitions.insert(partition_id as u32, NodeId::from_string(owner_id));

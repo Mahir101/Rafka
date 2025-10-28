@@ -7,6 +7,7 @@ use std::pin::Pin;
 use tokio_stream::wrappers::BroadcastStream;
 use rafka_core::proto::rafka::{
     broker_service_server::{BrokerService, BrokerServiceServer},
+    broker_service_client::BrokerServiceClient,
     RegisterRequest, RegisterResponse, SubscribeRequest, SubscribeResponse,
     PublishRequest, PublishResponse, ConsumeRequest, ConsumeResponse,
     AcknowledgeRequest, AcknowledgeResponse, UpdateOffsetRequest, UpdateOffsetResponse,
@@ -376,27 +377,103 @@ impl Broker {
         }
         
         // Try P2P mesh first, fallback to static cluster config
-        let target_node = if let Some(node) = self.get_node_for_partition(target_partition).await {
-            Some(node)
-        } else {
-            // Fallback to static cluster config
-            self.cluster_manager.get_broker_for_partition(target_partition).await
-                .map(|broker| NodeInfo {
-                    id: NodeId::from_string(broker.broker_id),
-                    address: SocketAddr::new(
-                        IpAddr::from_str(&broker.address).unwrap_or(IpAddr::from([127, 0, 0, 1])),
-                        broker.port as u16
-                    ),
-                    partition_id: broker.partition_id,
-                    total_partitions: broker.total_partitions,
-                    last_seen: SystemTime::now()
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                    is_alive: broker.is_healthy,
-                    metadata: HashMap::new(),
-                })
-        };
+        // Retry a few times in case topology is still syncing
+        let mut target_node = None;
+        for attempt in 0..3 {
+            if let Some(node) = self.get_node_for_partition(target_partition).await {
+                println!("🎯 Found target node for partition {}: {} at {}", target_partition, node.id.0, node.address);
+                target_node = Some(node);
+                break;
+            } else if attempt < 2 {
+                println!("🔍 No node found for partition {} in mesh (attempt {}), waiting for topology sync...", target_partition, attempt + 1);
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            }
+        }
+
+        if target_node.is_none() {
+            println!("🔍 No node found for partition {} in mesh after retries, triggering manual topology sync...", target_partition);
+
+            // Trigger manual topology sync by requesting topology from all known nodes
+            let mesh_lock = self.p2p_mesh.read().await;
+            if let Some(mesh_ref) = mesh_lock.as_ref() {
+                let topology = mesh_ref.get_cluster_topology().await;
+                for node in topology.nodes.values() {
+                    if node.id.0 != self.broker_id {
+                        println!("🔄 Requesting topology sync from {} at {}", node.id.0, node.address);
+                        let endpoint = format!("http://{}", node.address);
+                        if let Ok(mut client) = BrokerServiceClient::connect(endpoint).await {
+                            let request = GetMeshTopologyRequest {
+                                requesting_node_id: self.broker_id.clone(),
+                            };
+                            if let Ok(response) = client.get_mesh_topology(Request::new(request)).await {
+                                let remote_topology = response.into_inner();
+                                println!("📥 Manual sync received {} nodes, {} partitions", remote_topology.nodes.len(), remote_topology.partition_owners.len());
+
+                                // Update local topology with remote data
+                                drop(mesh_lock);
+                                let mut mesh_write = self.p2p_mesh.write().await;
+                                if let Some(mesh_ref) = mesh_write.as_mut() {
+                                    let mut local_topology = mesh_ref.topology.write().await;
+
+                                    // Add partition ownerships
+                                    for (partition_id, owner_id) in remote_topology.partition_owners {
+                                        local_topology.partitions.insert(partition_id as u32, NodeId::from_string(owner_id));
+                                    }
+
+                                    // Add nodes
+                                    for remote_node in remote_topology.nodes {
+                                        if !local_topology.nodes.contains_key(&NodeId::from_string(remote_node.node_id.clone())) {
+                                            let node_info = NodeInfo {
+                                                id: NodeId::from_string(remote_node.node_id),
+                                                address: format!("{}:{}", remote_node.address, remote_node.port).parse().unwrap_or_else(|_| "127.0.0.1:50051".parse().unwrap()),
+                                                partition_id: remote_node.partition_id as u32,
+                                                total_partitions: remote_node.total_partitions as u32,
+                                                last_seen: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
+                                                is_alive: remote_node.is_alive,
+                                                metadata: remote_node.metadata,
+                                            };
+                                            local_topology.add_node(node_info);
+                                        }
+                                    }
+                                }
+                                break; // Only need to sync from one node
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Wait a bit for the sync to complete
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+            // Try one more time to find the node
+            if let Some(node) = self.get_node_for_partition(target_partition).await {
+                println!("🎯 Found target node after manual sync: {} at {}", node.id.0, node.address);
+                target_node = Some(node);
+            } else {
+                println!("🔍 Still no node found for partition {}, checking cluster config...", target_partition);
+                // Fallback to static cluster config
+                target_node = self.cluster_manager.get_broker_for_partition(target_partition).await
+                    .map(|broker| {
+                        println!("📋 Found broker in cluster config: {} at {}:{}", broker.broker_id, broker.address, broker.port);
+                        NodeInfo {
+                            id: NodeId::from_string(broker.broker_id),
+                            address: SocketAddr::new(
+                                IpAddr::from_str(&broker.address).unwrap_or(IpAddr::from([127, 0, 0, 1])),
+                                broker.port as u16
+                            ),
+                            partition_id: broker.partition_id,
+                            total_partitions: broker.total_partitions,
+                            last_seen: SystemTime::now()
+                                .duration_since(SystemTime::UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs(),
+                            is_alive: broker.is_healthy,
+                            metadata: HashMap::new(),
+                        }
+                    });
+            }
+        }
 
         if let Some(target_node) = target_node {
             // Create gRPC client to forward message
