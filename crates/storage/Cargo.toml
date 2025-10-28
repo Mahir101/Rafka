@@ -2,9 +2,14 @@
 name = "rafka-storage"
 version = "0.1.0"
 edition = "2021"
+description = "Storage engine for Rafka message broker"
+license = "Apache-2.0"
+repository = "https://github.com/Mahir101/rafka"
+keywords = ["message-broker", "kafka", "distributed", "messaging"]
+categories = ["network-programming", "asynchronous"]
 
 [dependencies]
-rafka-core = { path = "../core" }
+rafka-core = "0.1.0"
 bytes = "1.4"
 tracing = "0.1"
 parking_lot = "0.12"

@@ -2,6 +2,11 @@
 name = "rafka-core"
 version = "0.1.0"
 edition = "2021"
+description = "Core library for Rafka - a high-performance message broker"
+license = "Apache-2.0"
+repository = "https://github.com/Mahir101/rafka"
+keywords = ["message-broker", "kafka", "distributed", "messaging"]
+categories = ["network-programming", "asynchronous"]
 
 [dependencies]
 tonic = "0.9"
