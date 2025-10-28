@@ -196,6 +196,7 @@ crates/broker/target/
 crates/producer/target/
 crates/consumer/target/
 crates/storage/target/
+crates/core/target/
 crates/.DS_Store
 crates/core/.DS_Store
 crates/broker/.DS_Store
