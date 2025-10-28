@@ -182,3 +182,8 @@ tramp
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
+crates/broker/target/
+crates/producer/target/
+crates/consumer/target/
+crates/storage/target/
+crates/core/target/
