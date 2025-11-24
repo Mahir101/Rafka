@@ -19,22 +19,28 @@ Rafka is a blazing-fast, experimental distributed asynchronous message broker in
 
 | Feature | Apache Kafka | Rafka (Current) | Status |
 |---------|--------------|-----------------|--------|
-| **Storage** | Disk-based (Persistent) | In-Memory (Volatile) | ❌ Missing |
+| **Storage** | Disk-based (Persistent) | Disk-based WAL (Persistent) | ✅ Implemented |
 | **Architecture** | Leader/Follower (Zookeeper/KRaft) | P2P Mesh / Distributed | 🔄 Different Approach |
-| **Consumption Model** | Consumer Groups (Load Balancing) | Pub/Sub (Broadcast to all) | ❌ Missing |
-| **Replication** | Multi-replica with ISR | P2P Forwarding (No redundancy) | ❌ Missing |
-| **Message Safety** | WAL (Write Ahead Log) | Memory-only | ❌ Missing |
-| **Transactions** | Exactly-once semantics | At-most-once / At-least-once | ❌ Missing |
-| **Compaction** | Log Compaction | Retention only | ❌ Missing |
+| **Consumption Model** | Consumer Groups (Load Balancing) | Consumer Groups + Pub/Sub | ✅ Implemented |
+| **Replication** | Multi-replica with ISR | Multi-replica with ISR | ✅ Implemented |
+| **Message Safety** | WAL (Write Ahead Log) | WAL (Write Ahead Log) | ✅ Implemented |
+| **Transactions** | Exactly-once semantics | 2PC with Idempotent Producers | ✅ Implemented |
+| **Compaction** | Log Compaction | Log Compaction (Multiple Strategies) | ✅ Implemented |
 | **Ecosystem** | Connect, Streams, Schema Registry | Core Broker only | ❌ Missing |
 
-### 🔍 Missing Backend Features Detail
+### 🔍 Feature Implementation Status
 
-1.  **Disk-based Persistence**: Rafka currently stores all messages in RAM. If the process restarts, all data is lost. Kafka uses a Write-Ahead Log (WAL) on disk for durability.
-2.  **Consumer Groups**: Kafka allows a group of consumers to share the load of a topic, with each partition being consumed by only one member of the group. Rafka currently broadcasts every message to every connected consumer (Pub/Sub model).
-3.  **Replication & High Availability**: Kafka replicates partitions across multiple brokers so that if one fails, another can take over. Rafka has P2P forwarding but does not yet store copies of data on multiple nodes.
-4.  **Log Compaction**: Kafka can keep only the latest value for a key, which is useful for state stores. Rafka only supports time/size-based retention.
-5.  **Transactions**: Rafka does not support atomic writes across multiple partitions/topics.
+#### ✅ Implemented Features
+
+1.  **Disk-based Persistence (WAL)**: Rafka now implements a Write-Ahead Log (WAL) for message durability. Messages are persisted to disk and survive broker restarts.
+2.  **Consumer Groups**: Rafka supports consumer groups with load balancing. Multiple consumers can share the load of a topic, with each partition being consumed by only one member of the group. Both Range and RoundRobin partition assignment strategies are supported.
+3.  **Replication & High Availability**: Rafka implements multi-replica partitions with In-Sync Replica (ISR) tracking and leader election for high availability.
+4.  **Log Compaction**: Rafka supports log compaction with multiple strategies (KeepLatest, TimeWindow, Hybrid) to optimize storage by keeping only the latest value for a key.
+5.  **Transactions**: Rafka implements atomic writes across multiple partitions/topics using Two-Phase Commit (2PC) protocol with idempotent producer support.
+
+#### ❌ Missing Features
+
+1.  **Ecosystem Tools**: Unlike Apache Kafka, Rafka currently lacks ecosystem tools like Kafka Connect (for data integration), Kafka Streams (for stream processing), and Schema Registry (for schema management). These would need to be developed separately to provide a complete data streaming platform.
 
 
 ## 🏗️ Architecture Overview
