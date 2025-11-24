@@ -32,21 +32,21 @@ readme = "README.md"
 # path = "src/bin/metrics_server.rs"
 
 [dependencies]
-rafka-core = "0.1.0"
-rafka-broker = "0.1.0"
-rafka-producer = "0.1.0"
-rafka-consumer = "0.1.0"
-rafka-storage = "0.1.0"
+rafka-core = { path = "crates/core" }
+rafka-broker = { path = "crates/broker" }
+rafka-producer = { path = "crates/producer" }
+rafka-consumer = { path = "crates/consumer" }
+rafka-storage = { path = "crates/storage" }
 tokio = { version = "1.0", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
 
-# [workspace]
-# members = [
-#     "crates/broker",
-#     "crates/core",
-#     "crates/producer",
-#     "crates/consumer",
-#     "crates/storage"
-# ]
+[workspace]
+members = [
+    "crates/broker",
+    "crates/core",
+    "crates/producer",
+    "crates/consumer",
+    "crates/storage"
+]
 
 

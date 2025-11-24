@@ -22,6 +22,9 @@ service BrokerService {
     rpc GetMeshTopology(GetMeshTopologyRequest) returns (GetMeshTopologyResponse);
     rpc JoinMesh(JoinMeshRequest) returns (JoinMeshResponse);
     rpc LeaveMesh(LeaveMeshRequest) returns (LeaveMeshResponse);
+    rpc JoinGroup(JoinGroupRequest) returns (JoinGroupResponse);
+    rpc SyncGroup(SyncGroupRequest) returns (SyncGroupResponse);
+    rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 }
 
 message PublishRequest {
@@ -42,6 +45,7 @@ message PublishResponse {
 message ConsumeRequest {
     string id = 1;
     string topic = 2;
+    string group_id = 3; // Optional group ID
 }
 
 message ConsumeResponse {
@@ -50,12 +54,14 @@ message ConsumeResponse {
     string payload = 3;
     int64 sent_at = 4;
     int64 offset = 5;
+    int32 partition = 6;
 }
 
 message AcknowledgeRequest {
     string consumer_id = 1;
     string message_id = 2;
     string topic = 3;
+    string group_id = 4; // Optional group ID
 }
 
 message AcknowledgeResponse {
@@ -76,6 +82,7 @@ message RegisterResponse {
 message SubscribeRequest {
     string consumer_id = 1;
     string topic = 2;
+    string group_id = 3; // Optional group ID
 }
 
 message SubscribeResponse {
@@ -87,6 +94,7 @@ message UpdateOffsetRequest {
     string consumer_id = 1;
     string topic = 2;
     int64 offset = 3;
+    string group_id = 4; // Optional group ID
 }
 
 message UpdateOffsetResponse {
@@ -100,6 +108,49 @@ message GetMetricsResponse {
     uint64 total_messages = 1;
     uint64 total_bytes = 2;
     uint64 oldest_message_age_secs = 3;
+}
+
+message JoinGroupRequest {
+    string group_id = 1;
+    string member_id = 2; // Empty for first join
+    string client_id = 3;
+    string protocol_type = 4; // e.g., "consumer"
+    repeated string topics = 5;
+}
+
+message JoinGroupResponse {
+    bool success = 1;
+    string member_id = 2;
+    string leader_id = 3;
+    int32 generation_id = 4;
+    string protocol_name = 5;
+    string message = 6;
+}
+
+message SyncGroupRequest {
+    string group_id = 1;
+    string member_id = 2;
+    int32 generation_id = 3;
+    // Map of member_id -> assignment (serialized bytes)
+    // Only leader sends this
+    map<string, bytes> group_assignment = 4;
+}
+
+message SyncGroupResponse {
+    bool success = 1;
+    bytes assignment = 2; // Serialized assignment for this member
+    string message = 3;
+}
+
+message HeartbeatRequest {
+    string group_id = 1;
+    string member_id = 2;
+    int32 generation_id = 3;
+}
+
+message HeartbeatResponse {
+    bool success = 1;
+    int32 error_code = 2; // 0 = None, 1 = RebalanceInProgress
 }
 
 enum ClientType {

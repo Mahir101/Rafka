@@ -1,0 +1,38 @@
+Starting Rafka broker on 127.0.0.1:50051 (partition 0/1)
+No cluster configuration provided. Running in standalone mode.
+🌐 Initializing P2P mesh in standalone mode
+🌐 Initializing P2P mesh networking...
+🌐 Starting P2P mesh for node 33b75b64-d8d4-4dba-9f2f-7d11e2e42562
+🤝 Joining cluster with bootstrap nodes: []
+🌐 Current mesh topology:
+   Nodes: 1
+     - 628471c4-dada-4f1b-93fe-73cbae1c385b at 127.0.0.1:50051 (partition 0, alive: true)
+   Partitions: 1
+     - Partition 0 owned by 33b75b64-d8d4-4dba-9f2f-7d11e2e42562
+✅ P2P mesh initialized successfully
+Broker listening on 127.0.0.1:50051
+🔄 Syncing topology to node 628471c4-dada-4f1b-93fe-73cbae1c385b at 127.0.0.1:50051
+Mesh topology requested by node: 33b75b64-d8d4-4dba-9f2f-7d11e2e42562
+📥 Received topology sync from 127.0.0.1:50051: 1 nodes, 1 partitions
+  📍 Remote partition 0 owned by 33b75b64-d8d4-4dba-9f2f-7d11e2e42562
+  🖥️ Remote node 628471c4-dada-4f1b-93fe-73cbae1c385b at 127.0.0.1:50051
+Client registered: 1ece947c-4599-448a-83c4-854f8b2a151e (2)
+Client registered: b6375a51-ba04-4f4a-8903-cea0bd0b72fd (2)
+Received JoinGroup request for group test-group
+Received JoinGroup request for group test-group
+Received SyncGroup request for group test-group
+Received SyncGroup request for group test-group
+WAL: Reading from "data/greetings/partition-0.log"
+WAL: File size: 0 bytes
+WAL: Reached EOF
+WAL: Read 0 entries
+Recovered 0 messages for greetings/0
+Consumer b6375a51-ba04-4f4a-8903-cea0bd0b72fd subscribed to topic greetings
+Consumer 1ece947c-4599-448a-83c4-854f8b2a151e subscribed to topic greetings
+Consumer b6375a51-ba04-4f4a-8903-cea0bd0b72fd started consuming on partition 0
+Consumer 1ece947c-4599-448a-83c4-854f8b2a151e started consuming on partition 0
+Broker: Adding message to batcher
+Background flusher: Processing 1 batches
+WAL: Appending message to WAL for partition 0
+WAL: Writing entry of size 37 bytes (payload size: 5)
+WAL: Flushed to disk
