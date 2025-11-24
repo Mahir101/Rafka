@@ -1,2 +1,0 @@
-Consumer registered with ID: aa4d630e-566b-4aef-acf5-405a5e7183e1
-Consumer ready - listening for messages on 'greetings' topic (partition 0)
