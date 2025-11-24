@@ -828,8 +828,6 @@ checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 [[package]]
 name = "rafka-broker"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a38349b2a0aab3bd8e00386313386dbda6923d18cd4d7e988966c16f03654afc"
 dependencies = [
  "async-stream",
  "bytes",
@@ -849,8 +847,6 @@ dependencies = [
 [[package]]
 name = "rafka-consumer"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bea521adeea136a77432161df118a61c283fc7429948080adba391a6e480de70"
 dependencies = [
  "chrono",
  "futures",
@@ -864,8 +860,6 @@ dependencies = [
 [[package]]
 name = "rafka-core"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bb84b9cd6d25110ad5adf1e56e3722011d0a37e85bc65d721e657b9a573298c"
 dependencies = [
  "anyhow",
  "bytes",
@@ -888,8 +882,6 @@ dependencies = [
 [[package]]
 name = "rafka-producer"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae7fc08dbaf5002b71d0855576a586e0975da6e5096f55f5b13a2c897a43a8d6"
 dependencies = [
  "chrono",
  "futures",
@@ -915,8 +907,6 @@ dependencies = [
 [[package]]
 name = "rafka-storage"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "366639355bfe0e479c1203b2d409d8673ced1323f80fe5cae7abf5f7d49411a1"
 dependencies = [
  "bincode",
  "bytes",
@@ -1076,7 +1066,7 @@ version = "0.9.34+deprecated"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
 dependencies = [
- "indexmap 2.7.0",
+ "indexmap 2.12.0",
  "itoa",
  "ryu",
  "serde",

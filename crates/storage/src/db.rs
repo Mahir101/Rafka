@@ -50,7 +50,11 @@ impl WalLog {
     }
 
     pub fn read_all(&self) -> io::Result<Vec<MessageEntry>> {
+        println!("WAL: Reading from {:?}", self.path);
         let mut file = File::open(&self.path)?;
+        let metadata = file.metadata()?;
+        println!("WAL: File size: {} bytes", metadata.len());
+        
         let mut entries = Vec::new();
         let mut buffer = [0u8; 8]; // For length prefix
 
@@ -58,16 +62,31 @@ impl WalLog {
             match file.read_exact(&mut buffer) {
                 Ok(_) => {
                     let len = u64::from_le_bytes(buffer) as usize;
+                    println!("WAL: Found entry with length: {}", len);
                     let mut data = vec![0u8; len];
-                    file.read_exact(&mut data)?;
-                    let entry: MessageEntry = bincode::deserialize(&data)
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                    entries.push(entry);
+                    if let Err(e) = file.read_exact(&mut data) {
+                        println!("WAL: Failed to read payload of size {}: {}", len, e);
+                        return Err(e);
+                    }
+                    match bincode::deserialize(&data) {
+                        Ok(entry) => entries.push(entry),
+                        Err(e) => {
+                            println!("WAL: Failed to deserialize entry: {}", e);
+                            return Err(io::Error::new(io::ErrorKind::Other, e));
+                        }
+                    }
                 }
-                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-                Err(e) => return Err(e),
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    println!("WAL: Reached EOF");
+                    break;
+                },
+                Err(e) => {
+                    println!("WAL: Error reading file: {}", e);
+                    return Err(e);
+                },
             }
         }
+        println!("WAL: Read {} entries", entries.len());
         Ok(entries)
     }
 }
@@ -209,11 +228,13 @@ impl PartitionQueue {
 
         // Write to WAL
         if let Some(wal) = &self.wal {
+            println!("WAL: Appending message to WAL for partition {}", partition_id);
             if let Err(e) = wal.append(&entry) {
                 println!("Failed to write to WAL: {}", e);
             }
+        } else {
+            println!("WAL: No WAL configured for partition {}", partition_id);
         }
-
 
         // Update current size
         self.current_size.fetch_add(payload.len(), Ordering::SeqCst);

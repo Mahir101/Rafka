@@ -1,74 +1,68 @@
 #!/bin/bash
 set -e
 
-cleanup() {
-    echo "Cleaning up..."
-    if [ ! -z "$BROKER_PID" ]; then
-        kill $BROKER_PID 2>/dev/null || true
-    fi
-}
-trap cleanup EXIT
+# Colors for output
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+NC='\033[0m'
 
-# Build the project
-echo "Building Rafka..."
-cargo build
+echo -e "${GREEN}Building Rafka...${NC}"
+cargo build --release
 
 # Clean up previous data
-rm -rf data
+rm -rf data/
 
 # Start Broker in background
-echo "Starting Broker..."
-./target/debug/start_broker --port 50051 --partition 0 --total-partitions 1 &
+echo -e "${GREEN}Starting Broker...${NC}"
+./target/release/start_broker --port 50051 --partition 0 --total-partitions 1 &
 BROKER_PID=$!
-echo "Broker PID: $BROKER_PID"
-sleep 5
 
-# Check if broker is still running
-if ! ps -p $BROKER_PID > /dev/null; then
-    echo "Broker died unexpectedly!"
-    exit 1
-fi
-
-# Publish a message
-echo "Publishing message 'Persistent Message'..."
-./target/debug/start_producer --port 50051 --message "Persistent Message" --key "test-key"
+# Wait for broker to be ready
+echo "Waiting for broker to start..."
+for i in {1..10}; do
+    if nc -z localhost 50051; then
+        echo "Broker is ready!"
+        break
+    fi
+    sleep 1
+done
 sleep 2
 
+# Produce a message
+echo -e "${GREEN}Producing message...${NC}"
+./target/release/start_producer --message "persistent_msg" --key "key1"
+
 # Kill Broker
-echo "Killing Broker..."
+echo -e "${GREEN}Killing Broker...${NC}"
 kill $BROKER_PID
-wait $BROKER_PID 2>/dev/null || true
 sleep 2
 
 # Restart Broker
-echo "Restarting Broker..."
-./target/debug/start_broker --port 50051 --partition 0 --total-partitions 1 &
+echo -e "${GREEN}Restarting Broker...${NC}"
+./target/release/start_broker --port 50051 --partition 0 --total-partitions 1 &
 BROKER_PID=$!
-echo "New Broker PID: $BROKER_PID"
-sleep 5
-
-# Check if broker is still running
-if ! ps -p $BROKER_PID > /dev/null; then
-    echo "Broker died unexpectedly on restart!"
-    exit 1
-fi
+sleep 2
 
 # Consume message
-echo "Checking for persistence..."
-if [ -f "data/greetings/partition-0.log" ]; then
-    echo "Log file exists!"
-    ls -l data/greetings/partition-0.log
-    
-    # Optional: Verify content size > 0
-    if [ -s "data/greetings/partition-0.log" ]; then
-        echo "Log file has content."
-    else
-        echo "Log file is empty!"
-        exit 1
-    fi
+echo -e "${GREEN}Consuming message...${NC}"
+./target/release/start_consumer --port 50051 > consumer_output.txt &
+CONSUMER_PID=$!
+
+sleep 5
+kill $CONSUMER_PID
+
+sleep 3
+kill $CONSUMER_PID
+kill $BROKER_PID
+
+# Check output
+if grep -q "persistent_msg" consumer_output.txt; then
+    echo -e "${GREEN}✅ SUCCESS: Message survived broker restart!${NC}"
+    rm consumer_output.txt
+    exit 0
 else
-    echo "Log file MISSING!"
+    echo -e "${RED}❌ FAILURE: Message NOT found after restart.${NC}"
+    cat consumer_output.txt
+    rm consumer_output.txt
     exit 1
 fi
-
-echo "Verification Successful!"

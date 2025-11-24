@@ -36,6 +36,11 @@ use std::fs;
 use std::net::{SocketAddr, IpAddr};
 use std::str::FromStr;
 
+use crate::coordinator::GroupCoordinator;
+use crate::replication::ReplicationManager;
+use crate::compaction::{LogCompactionManager, CompactionStrategy};
+use crate::transactions::TransactionCoordinator;
+
 pub struct Broker {
     topics: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     messages: Arc<RwLock<HashMap<u32, broadcast::Sender<ConsumeResponse>>>>,
@@ -50,9 +55,14 @@ pub struct Broker {
     message_pool: Arc<MessagePool<OptimizedMessage>>,
     cluster_manager: Arc<ClusterManager>,
     p2p_mesh: Arc<RwLock<Option<P2PMesh>>>,
+    coordinator: Arc<GroupCoordinator>,
     broker_id: String,
     address: String,
     port: u16,
+    // New managers for advanced features
+    replication_manager: Arc<ReplicationManager>,
+    compaction_manager: Arc<LogCompactionManager>,
+    transaction_coordinator: Arc<TransactionCoordinator>,
 }
 
 impl Broker {
@@ -87,6 +97,18 @@ impl Broker {
         let broker_id = format!("broker-{}", partition_id);
         let cluster_manager = Arc::new(ClusterManager::new("rafka-cluster".to_string(), 5000));
         
+        // Initialize group coordinator
+        let coordinator = Arc::new(GroupCoordinator::new());
+
+        // Initialize replication manager (replication factor of 3)
+        let replication_manager = Arc::new(ReplicationManager::new(3));
+        
+        // Initialize log compaction manager (keep latest strategy)
+        let compaction_manager = Arc::new(LogCompactionManager::new(CompactionStrategy::KeepLatest));
+        
+        // Initialize transaction coordinator
+        let transaction_coordinator = Arc::new(TransactionCoordinator::new());
+
         let message_counter = Arc::new(AtomicUsize::new(0));
         let messages = Arc::new(RwLock::new(HashMap::new()));
 
@@ -104,92 +126,14 @@ impl Broker {
             message_pool: message_pool.clone(),
             cluster_manager,
             p2p_mesh: Arc::new(RwLock::new(None)),
+            coordinator,
             broker_id,
             address: address.to_string(),
             port,
+            replication_manager,
+            compaction_manager,
+            transaction_coordinator,
         };
-
-        // Spawn background batch processor
-        let batcher_clone = batcher.clone();
-        let storage_clone = storage.clone();
-        let zero_copy_clone = zero_copy_processor.clone();
-        let message_pool_clone = message_pool.clone();
-        let messages_clone = messages.clone();
-        let message_counter_clone = message_counter.clone();
-        let broadcast_capacity = BROADCAST_CAPACITY;
-        
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                let ready_batches = batcher_clone.get_ready_batches().await;
-                for batch in ready_batches {
-                    let messages = batch.get_messages();
-                    if messages.is_empty() {
-                        continue;
-                    }
-                    
-                    let message_payloads: Vec<bytes::Bytes> = messages.iter()
-                        .map(|req| bytes::Bytes::from(req.payload.clone()))
-                        .collect();
-                    let processed_messages = zero_copy_clone.process_batch(&message_payloads).await;
-                    
-                    // Ensure channel exists (this is tricky without self, so we do best effort or use a map)
-                    // Since we can't easily call ensure_channel, we'll access the map directly
-                    // and if it's missing, we might skip broadcasting but still persist?
-                    // Or we can just create a new channel if missing.
-                    let mut channels = messages_clone.write().await;
-                    let sender = if let Some(sender) = channels.get(&partition_id) {
-                         if sender.receiver_count() > 0 {
-                            sender.clone()
-                        } else {
-                            let (new_tx, _) = broadcast::channel(broadcast_capacity);
-                            channels.insert(partition_id, new_tx.clone());
-                            new_tx
-                        }
-                    } else {
-                        let (new_tx, _) = broadcast::channel(broadcast_capacity);
-                        channels.insert(partition_id, new_tx.clone());
-                        new_tx
-                    };
-                    drop(channels); // Release lock
-                    
-                    for (req, processed_payload) in messages.iter().zip(processed_messages.iter()) {
-                        let mut pooled_message = message_pool_clone.get().await;
-                        let optimized_msg = pooled_message.get_mut();
-                        
-                        optimized_msg.id = Uuid::new_v4().to_string();
-                        optimized_msg.topic = req.topic.clone();
-                        optimized_msg.payload = processed_payload.to_vec();
-                        optimized_msg.timestamp = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs();
-                        optimized_msg.partition = partition_id;
-                        
-                        // Persist to storage
-                        let payload = bytes::Bytes::from(req.payload.clone());
-                        let offset = storage_clone.append(&req.topic, partition_id as i32, &payload)
-                            .unwrap_or_else(|| {
-                                println!("Failed to append to storage in background batch");
-                                message_counter_clone.fetch_add(1, Ordering::SeqCst) as i64
-                            });
-                        optimized_msg.offset = offset;
-
-                        let response = ConsumeResponse {
-                            message_id: optimized_msg.id.clone(),
-                            topic: optimized_msg.topic.clone(),
-                            payload: String::from_utf8_lossy(&processed_payload).to_string(),
-                            sent_at: optimized_msg.timestamp as i64,
-                            offset: optimized_msg.offset,
-                        };
-
-                        if let Err(e) = sender.send(response) {
-                            println!("Failed to broadcast message in background batch: {}", e);
-                        }
-                    }
-                }
-            }
-        });
 
         broker
     }
@@ -309,6 +253,7 @@ impl Broker {
                 .unwrap()
                 .as_secs() as i64,
             offset,
+            partition: self.partition_id as i32,
         };
 
         let sender = self.ensure_channel(self.partition_id).await;
@@ -361,6 +306,7 @@ impl Broker {
             optimized_msg.partition = self.partition_id;
             
             // Persist to storage
+            println!("Broker: Persisting message to storage: topic={}, partition={}", req.topic, self.partition_id);
             let payload = bytes::Bytes::from(req.payload.clone());
             let offset = self.storage.append(&req.topic, self.partition_id as i32, &payload)
                 .unwrap_or_else(|| {
@@ -375,6 +321,7 @@ impl Broker {
                 payload: String::from_utf8_lossy(&processed_payload).to_string(), // Convert Bytes to String
                 sent_at: optimized_msg.timestamp as i64,
                 offset: optimized_msg.offset,
+                partition: self.partition_id as i32,
             };
 
             if let Err(e) = sender.send(response) {
@@ -398,6 +345,79 @@ impl Broker {
     pub async fn serve(self, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
         let addr = addr.parse()?;
         println!("Broker listening on {}", addr);
+
+        // Spawn background batch flusher
+        let batcher = self.batcher.clone();
+        let storage = self.storage.clone();
+        let zero_copy = self.zero_copy_processor.clone();
+        let pool = self.message_pool.clone();
+        let messages = self.messages.clone();
+        let partition_id = self.partition_id;
+        let message_counter = self.message_counter.clone();
+        let broadcast_capacity = self.broadcast_capacity;
+        
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                let ready_batches = batcher.get_ready_batches().await;
+                if !ready_batches.is_empty() {
+                    println!("Background flusher: Processing {} batches", ready_batches.len());
+                    for batch in ready_batches {
+                        let msgs = batch.get_messages();
+                        if msgs.is_empty() { continue; }
+                        
+                        let message_payloads: Vec<bytes::Bytes> = msgs.iter()
+                            .map(|req| bytes::Bytes::from(req.payload.clone()))
+                            .collect();
+                        let processed_messages = zero_copy.process_batch(&message_payloads).await;
+                        
+                        // Ensure channel logic
+                        let sender = {
+                            let channels = messages.read().await;
+                            if let Some(s) = channels.get(&partition_id) {
+                                s.clone()
+                            } else {
+                                drop(channels);
+                                let mut channels = messages.write().await;
+                                channels.entry(partition_id).or_insert_with(|| {
+                                    let (tx, _) = broadcast::channel(broadcast_capacity);
+                                    tx
+                                }).clone()
+                            }
+                        };
+
+                        for (req, processed_payload) in msgs.iter().zip(processed_messages.iter()) {
+                            let mut pooled_message = pool.get().await;
+                            let optimized_msg = pooled_message.get_mut();
+                            
+                            optimized_msg.id = Uuid::new_v4().to_string();
+                            optimized_msg.topic = req.topic.clone();
+                            optimized_msg.payload = processed_payload.to_vec();
+                            optimized_msg.timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                            optimized_msg.partition = partition_id;
+                            
+                            let payload = bytes::Bytes::from(req.payload.clone());
+                            let offset = storage.append(&req.topic, partition_id as i32, &payload)
+                                .unwrap_or_else(|| message_counter.fetch_add(1, Ordering::SeqCst) as i64);
+                            optimized_msg.offset = offset;
+
+                            let response = ConsumeResponse {
+                                message_id: optimized_msg.id.clone(),
+                                topic: optimized_msg.topic.clone(),
+                                payload: String::from_utf8_lossy(&processed_payload).to_string(),
+                                sent_at: optimized_msg.timestamp as i64,
+                                offset: optimized_msg.offset,
+                                partition: partition_id as i32,
+                            };
+
+                            if let Err(e) = sender.send(response) {
+                                println!("Background flusher: Failed to broadcast: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+        });
 
         Server::builder()
             .add_service(BrokerServiceServer::new(self))
@@ -670,6 +690,7 @@ impl Broker {
 
             offset: self.storage.append(&optimized_message.topic, partition_id as i32, &bytes::Bytes::from(optimized_message.payload.clone()))
                 .unwrap_or_else(|| self.message_counter.fetch_add(1, Ordering::SeqCst) as i64),
+            partition: partition_id as i32,
         };
         
         let _ = channel.send(response);
@@ -735,6 +756,7 @@ impl BrokerService for Broker {
         self.ensure_topic(&req.topic).await;
         
         // Add message to batcher for performance optimization
+        println!("Broker: Adding message to batcher");
         if let Err(e) = self.batcher.add_message(req.clone()).await {
             println!("Failed to add message to batcher: {}", e);
             // Fall back to immediate processing
@@ -743,6 +765,9 @@ impl BrokerService for Broker {
 
         // Process any ready batches
         let ready_batches = self.batcher.get_ready_batches().await;
+        if !ready_batches.is_empty() {
+            println!("Broker: Processing {} ready batches immediately", ready_batches.len());
+        }
         for batch in ready_batches {
             self.process_batch(batch).await;
         }
@@ -798,17 +823,99 @@ impl BrokerService for Broker {
         self.ensure_topic(&req.topic).await;
         
         let mut topics = self.topics.write().await;
-        topics
-            .entry(req.topic.clone())
-            .or_insert_with(HashSet::new)
-            .insert(req.consumer_id.clone());
-
+        if let Some(subscribers) = topics.get_mut(&req.topic) {
+            subscribers.insert(req.consumer_id.clone());
+        }
+        
         println!("Consumer {} subscribed to topic {}", req.consumer_id, req.topic);
         
         Ok(Response::new(SubscribeResponse {
             success: true,
-            message: "Subscribed successfully".to_string(),
+            message: format!("Subscribed to topic {}", req.topic),
         }))
+    }
+
+    async fn join_group(
+        &self,
+        request: Request<rafka_core::proto::rafka::JoinGroupRequest>,
+    ) -> Result<Response<rafka_core::proto::rafka::JoinGroupResponse>, Status> {
+        let req = request.into_inner();
+        println!("Received JoinGroup request for group {}", req.group_id);
+
+        match self.coordinator.handle_join_group(
+            &req.group_id,
+            &req.member_id,
+            &req.client_id,
+            &req.protocol_type,
+            req.topics,
+        ).await {
+            Ok((member_id, leader_id, generation_id, protocol_name)) => {
+                Ok(Response::new(rafka_core::proto::rafka::JoinGroupResponse {
+                    success: true,
+                    member_id,
+                    leader_id,
+                    generation_id,
+                    protocol_name,
+                    message: "Joined group successfully".to_string(),
+                }))
+            },
+            Err(e) => Err(Status::internal(e)),
+        }
+    }
+
+    async fn sync_group(
+        &self,
+        request: Request<rafka_core::proto::rafka::SyncGroupRequest>,
+    ) -> Result<Response<rafka_core::proto::rafka::SyncGroupResponse>, Status> {
+        let req = request.into_inner();
+        println!("Received SyncGroup request for group {}", req.group_id);
+
+        match self.coordinator.handle_sync_group(
+            &req.group_id,
+            &req.member_id,
+            req.generation_id,
+            req.group_assignment,
+        ).await {
+            Ok(assignment) => {
+                Ok(Response::new(rafka_core::proto::rafka::SyncGroupResponse {
+                    success: true,
+                    assignment,
+                    message: "Synced group successfully".to_string(),
+                }))
+            },
+            Err(e) => Err(Status::internal(e)),
+        }
+    }
+
+    async fn heartbeat(
+        &self,
+        request: Request<rafka_core::proto::rafka::HeartbeatRequest>,
+    ) -> Result<Response<rafka_core::proto::rafka::HeartbeatResponse>, Status> {
+        let req = request.into_inner();
+        
+        match self.coordinator.handle_heartbeat(
+            &req.group_id,
+            &req.member_id,
+            req.generation_id,
+        ).await {
+            Ok(_) => {
+                Ok(Response::new(rafka_core::proto::rafka::HeartbeatResponse {
+                    success: true,
+                    error_code: 0,
+                }))
+            },
+            Err(e) => {
+                // If rebalance in progress, return error code 1
+                if e == "Rebalance in progress" {
+                     Ok(Response::new(rafka_core::proto::rafka::HeartbeatResponse {
+                        success: false,
+                        error_code: 1,
+                    }))
+                } else {
+                    Err(Status::internal(e))
+                }
+            }
+        }
     }
 
     async fn acknowledge(
@@ -902,6 +1009,7 @@ impl BrokerService for Broker {
                 .unwrap()
                 .as_secs() as i64,
             offset,
+            partition: self.partition_id as i32,
         };
 
         // Broadcast to local consumers

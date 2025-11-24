@@ -75,7 +75,7 @@ impl PerformanceBenchmark {
         println!("📥 Starting consume throughput benchmark...");
         
         // Create consumer
-        let mut consumer = Consumer::new("127.0.0.1:50051").await
+        let mut consumer = Consumer::new("127.0.0.1:50051", None).await
             .map_err(|e| format!("Failed to create consumer: {}", e))?;
         
         consumer.subscribe("benchmark".to_string()).await
