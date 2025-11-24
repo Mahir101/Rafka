@@ -37,6 +37,9 @@ use std::net::{SocketAddr, IpAddr};
 use std::str::FromStr;
 
 use crate::coordinator::GroupCoordinator;
+use crate::replication::ReplicationManager;
+use crate::compaction::{LogCompactionManager, CompactionStrategy};
+use crate::transactions::TransactionCoordinator;
 
 pub struct Broker {
     topics: Arc<RwLock<HashMap<String, HashSet<String>>>>,
@@ -56,6 +59,10 @@ pub struct Broker {
     broker_id: String,
     address: String,
     port: u16,
+    // New managers for advanced features
+    replication_manager: Arc<ReplicationManager>,
+    compaction_manager: Arc<LogCompactionManager>,
+    transaction_coordinator: Arc<TransactionCoordinator>,
 }
 
 impl Broker {
@@ -93,6 +100,15 @@ impl Broker {
         // Initialize group coordinator
         let coordinator = Arc::new(GroupCoordinator::new());
 
+        // Initialize replication manager (replication factor of 3)
+        let replication_manager = Arc::new(ReplicationManager::new(3));
+        
+        // Initialize log compaction manager (keep latest strategy)
+        let compaction_manager = Arc::new(LogCompactionManager::new(CompactionStrategy::KeepLatest));
+        
+        // Initialize transaction coordinator
+        let transaction_coordinator = Arc::new(TransactionCoordinator::new());
+
         let message_counter = Arc::new(AtomicUsize::new(0));
         let messages = Arc::new(RwLock::new(HashMap::new()));
 
@@ -114,6 +130,9 @@ impl Broker {
             broker_id,
             address: address.to_string(),
             port,
+            replication_manager,
+            compaction_manager,
+            transaction_coordinator,
         };
 
         broker

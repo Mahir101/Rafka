@@ -169,4 +169,75 @@ impl GroupCoordinator {
             Err("Group not found".to_string())
         }
     }
+
+    /// Get list of all members in a group (for leader to perform assignment)
+    pub async fn get_group_members(&self, group_id: &str) -> Result<Vec<String>, String> {
+        let groups = self.groups.read().await;
+        if let Some(group) = groups.get(group_id) {
+            let group = group.read().await;
+            Ok(group.members.keys().cloned().collect())
+        } else {
+            Err("Group not found".to_string())
+        }
+    }
+
+    /// Assign partitions to members using Range strategy
+    /// Returns a map of member_id -> assigned partition IDs
+    pub fn assign_partitions_range(
+        member_ids: &[String],
+        num_partitions: i32,
+    ) -> HashMap<String, Vec<i32>> {
+        let mut assignments = HashMap::new();
+        
+        if member_ids.is_empty() || num_partitions == 0 {
+            return assignments;
+        }
+
+        let partitions_per_member = num_partitions as usize / member_ids.len();
+        let extra_partitions = num_partitions as usize % member_ids.len();
+
+        let mut partition_idx = 0;
+        for (i, member_id) in member_ids.iter().enumerate() {
+            let num_partitions_for_member = if i < extra_partitions {
+                partitions_per_member + 1
+            } else {
+                partitions_per_member
+            };
+
+            let mut member_partitions = Vec::new();
+            for _ in 0..num_partitions_for_member {
+                member_partitions.push(partition_idx);
+                partition_idx += 1;
+            }
+            assignments.insert(member_id.clone(), member_partitions);
+        }
+
+        assignments
+    }
+
+    /// Assign partitions using RoundRobin strategy
+    pub fn assign_partitions_roundrobin(
+        member_ids: &[String],
+        num_partitions: i32,
+    ) -> HashMap<String, Vec<i32>> {
+        let mut assignments: HashMap<String, Vec<i32>> = HashMap::new();
+        
+        if member_ids.is_empty() || num_partitions == 0 {
+            return assignments;
+        }
+
+        // Initialize empty vectors for each member
+        for member_id in member_ids {
+            assignments.insert(member_id.clone(), Vec::new());
+        }
+
+        // Distribute partitions in round-robin fashion
+        for partition_id in 0..num_partitions {
+            let member_idx = partition_id as usize % member_ids.len();
+            let member_id = &member_ids[member_idx];
+            assignments.get_mut(member_id).unwrap().push(partition_id);
+        }
+
+        assignments
+    }
 }
