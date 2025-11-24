@@ -63,6 +63,10 @@ pub struct Broker {
     replication_manager: Arc<ReplicationManager>,
     compaction_manager: Arc<LogCompactionManager>,
     transaction_coordinator: Arc<TransactionCoordinator>,
+    // Monitoring components
+    health_monitor: Arc<rafka_core::health::HealthMonitor>,
+    heartbeat_manager: Arc<rafka_core::health::HeartbeatManager>,
+    metrics_collector: Arc<rafka_core::monitoring::MetricsCollector>,
 }
 
 impl Broker {
@@ -109,6 +113,20 @@ impl Broker {
         // Initialize transaction coordinator
         let transaction_coordinator = Arc::new(TransactionCoordinator::new());
 
+        // Initialize monitoring components
+        let health_monitor = Arc::new(rafka_core::health::HealthMonitor::new(
+            Duration::from_secs(5),  // Check every 5 seconds
+            3,                        // Failure threshold
+        ));
+        
+        let heartbeat_manager = Arc::new(rafka_core::health::HeartbeatManager::new(
+            Duration::from_secs(30), // 30 second timeout
+        ));
+        
+        let metrics_collector = Arc::new(rafka_core::monitoring::MetricsCollector::new(
+            broker_id.clone(),
+        ));
+
         let message_counter = Arc::new(AtomicUsize::new(0));
         let messages = Arc::new(RwLock::new(HashMap::new()));
 
@@ -133,6 +151,9 @@ impl Broker {
             replication_manager,
             compaction_manager,
             transaction_coordinator,
+            health_monitor,
+            heartbeat_manager,
+            metrics_collector,
         };
 
         broker

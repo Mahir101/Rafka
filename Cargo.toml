@@ -37,6 +37,7 @@ rafka-broker = { path = "crates/broker" }
 rafka-producer = { path = "crates/producer" }
 rafka-consumer = { path = "crates/consumer" }
 rafka-storage = { path = "crates/storage" }
+rafka-streams = { path = "crates/streams" }
 tokio = { version = "1.0", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
 
@@ -46,7 +47,8 @@ members = [
     "crates/core",
     "crates/producer",
     "crates/consumer",
-    "crates/storage"
+    "crates/storage",
+    "crates/streams"
 ]
 
 
