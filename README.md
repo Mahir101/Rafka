@@ -9,10 +9,16 @@ Rafka is a blazing-fast, experimental distributed asynchronous message broker in
 - **High-Performance Async Architecture**: Built on Tokio for maximum concurrency and throughput
 - **gRPC Communication**: Modern protocol buffers for efficient inter-service communication
 - **Partitioned Message Processing**: Hash-based partitioning for horizontal scalability
-- **In-Memory Storage Engine**: Custom-built storage with retention policies and metrics
+- **Disk-based Persistence**: Write-Ahead Log (WAL) for message durability
+- **Consumer Groups**: Load-balanced message consumption with partition assignment
+- **Replication**: Multi-replica partitions with ISR tracking for high availability
+- **Log Compaction**: Multiple strategies (KeepLatest, TimeWindow, Hybrid) for storage optimization
+- **Transactions**: Two-Phase Commit (2PC) with idempotent producer support
+- **Comprehensive Monitoring**: Health checks, heartbeat tracking, and circuit breakers
+- **Real-time Metrics**: Prometheus-compatible metrics export with latency histograms
+- **Stream Processing**: Kafka Streams-like API for message transformation and aggregation
 - **Offset Tracking**: Consumer offset management for reliable message delivery
 - **Retention Policies**: Configurable message retention based on age and size
-- **Real-time Metrics**: Built-in monitoring and performance metrics
 - **Modular Design**: Clean separation of concerns across multiple crates
 
 ## 🆚 Rafka vs Apache Kafka Feature Comparison
