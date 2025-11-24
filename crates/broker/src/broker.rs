@@ -39,7 +39,7 @@ use std::str::FromStr;
 pub struct Broker {
     topics: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     messages: Arc<RwLock<HashMap<u32, broadcast::Sender<ConsumeResponse>>>>,
-    message_counter: AtomicUsize,
+    message_counter: Arc<AtomicUsize>,
     broadcast_capacity: usize,
     partition_id: u32,
     total_partitions: u32,
@@ -87,25 +87,113 @@ impl Broker {
         let broker_id = format!("broker-{}", partition_id);
         let cluster_manager = Arc::new(ClusterManager::new("rafka-cluster".to_string(), 5000));
         
-        Self {
+        let message_counter = Arc::new(AtomicUsize::new(0));
+        let messages = Arc::new(RwLock::new(HashMap::new()));
+
+        let broker = Self {
             topics: Arc::new(RwLock::new(HashMap::new())),
-            messages: Arc::new(RwLock::new(HashMap::new())),
-            message_counter: AtomicUsize::new(0),
+            messages: messages.clone(),
+            message_counter: message_counter.clone(),
             broadcast_capacity: BROADCAST_CAPACITY,
             partition_id,
             total_partitions,
-            storage,
+            storage: storage.clone(),
             consumer_offsets: Arc::new(RwLock::new(HashMap::new())),
-            batcher,
-            zero_copy_processor,
-            message_pool,
+            batcher: batcher.clone(),
+            zero_copy_processor: zero_copy_processor.clone(),
+            message_pool: message_pool.clone(),
             cluster_manager,
             p2p_mesh: Arc::new(RwLock::new(None)),
             broker_id,
             address: address.to_string(),
             port,
-        }
+        };
+
+        // Spawn background batch processor
+        let batcher_clone = batcher.clone();
+        let storage_clone = storage.clone();
+        let zero_copy_clone = zero_copy_processor.clone();
+        let message_pool_clone = message_pool.clone();
+        let messages_clone = messages.clone();
+        let message_counter_clone = message_counter.clone();
+        let broadcast_capacity = BROADCAST_CAPACITY;
+        
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                let ready_batches = batcher_clone.get_ready_batches().await;
+                for batch in ready_batches {
+                    let messages = batch.get_messages();
+                    if messages.is_empty() {
+                        continue;
+                    }
+                    
+                    let message_payloads: Vec<bytes::Bytes> = messages.iter()
+                        .map(|req| bytes::Bytes::from(req.payload.clone()))
+                        .collect();
+                    let processed_messages = zero_copy_clone.process_batch(&message_payloads).await;
+                    
+                    // Ensure channel exists (this is tricky without self, so we do best effort or use a map)
+                    // Since we can't easily call ensure_channel, we'll access the map directly
+                    // and if it's missing, we might skip broadcasting but still persist?
+                    // Or we can just create a new channel if missing.
+                    let mut channels = messages_clone.write().await;
+                    let sender = if let Some(sender) = channels.get(&partition_id) {
+                         if sender.receiver_count() > 0 {
+                            sender.clone()
+                        } else {
+                            let (new_tx, _) = broadcast::channel(broadcast_capacity);
+                            channels.insert(partition_id, new_tx.clone());
+                            new_tx
+                        }
+                    } else {
+                        let (new_tx, _) = broadcast::channel(broadcast_capacity);
+                        channels.insert(partition_id, new_tx.clone());
+                        new_tx
+                    };
+                    drop(channels); // Release lock
+                    
+                    for (req, processed_payload) in messages.iter().zip(processed_messages.iter()) {
+                        let mut pooled_message = message_pool_clone.get().await;
+                        let optimized_msg = pooled_message.get_mut();
+                        
+                        optimized_msg.id = Uuid::new_v4().to_string();
+                        optimized_msg.topic = req.topic.clone();
+                        optimized_msg.payload = processed_payload.to_vec();
+                        optimized_msg.timestamp = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+                        optimized_msg.partition = partition_id;
+                        
+                        // Persist to storage
+                        let payload = bytes::Bytes::from(req.payload.clone());
+                        let offset = storage_clone.append(&req.topic, partition_id as i32, &payload)
+                            .unwrap_or_else(|| {
+                                println!("Failed to append to storage in background batch");
+                                message_counter_clone.fetch_add(1, Ordering::SeqCst) as i64
+                            });
+                        optimized_msg.offset = offset;
+
+                        let response = ConsumeResponse {
+                            message_id: optimized_msg.id.clone(),
+                            topic: optimized_msg.topic.clone(),
+                            payload: String::from_utf8_lossy(&processed_payload).to_string(),
+                            sent_at: optimized_msg.timestamp as i64,
+                            offset: optimized_msg.offset,
+                        };
+
+                        if let Err(e) = sender.send(response) {
+                            println!("Failed to broadcast message in background batch: {}", e);
+                        }
+                    }
+                }
+            }
+        });
+
+        broker
     }
+
 
     pub async fn load_cluster_config(&self, config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let config_content = fs::read_to_string(config_path)?;
@@ -206,7 +294,11 @@ impl Broker {
     /// Process a single message (fallback when batching fails)
     async fn process_single_message(&self, req: PublishRequest) -> Result<Response<PublishResponse>, Status> {
         let message_id = Uuid::new_v4().to_string();
-        let offset = self.message_counter.fetch_add(1, Ordering::SeqCst) as i64;
+        
+        // Persist to storage
+        let payload = bytes::Bytes::from(req.payload.clone());
+        let offset = self.storage.append(&req.topic, self.partition_id as i32, &payload)
+            .ok_or_else(|| Status::internal("Failed to append to storage"))?;
 
         let response = ConsumeResponse {
             message_id: message_id.clone(),
@@ -267,7 +359,15 @@ impl Broker {
                 .unwrap()
                 .as_secs();
             optimized_msg.partition = self.partition_id;
-            optimized_msg.offset = self.message_counter.fetch_add(1, Ordering::SeqCst) as i64;
+            
+            // Persist to storage
+            let payload = bytes::Bytes::from(req.payload.clone());
+            let offset = self.storage.append(&req.topic, self.partition_id as i32, &payload)
+                .unwrap_or_else(|| {
+                    println!("Failed to append to storage in batch");
+                    self.message_counter.fetch_add(1, Ordering::SeqCst) as i64
+                });
+            optimized_msg.offset = offset;
 
             let response = ConsumeResponse {
                 message_id: optimized_msg.id.clone(),
@@ -567,7 +667,9 @@ impl Broker {
             topic: optimized_message.topic.clone(),
             payload: processed_payload.clone(),
             sent_at: optimized_message.timestamp as i64,
-            offset: self.message_counter.fetch_add(1, Ordering::SeqCst) as i64,
+
+            offset: self.storage.append(&optimized_message.topic, partition_id as i32, &bytes::Bytes::from(optimized_message.payload.clone()))
+                .unwrap_or_else(|| self.message_counter.fetch_add(1, Ordering::SeqCst) as i64),
         };
         
         let _ = channel.send(response);
@@ -784,7 +886,11 @@ impl BrokerService for Broker {
         self.ensure_topic(&req.topic).await;
         
         let message_id = Uuid::new_v4().to_string();
-        let offset = self.message_counter.fetch_add(1, Ordering::SeqCst) as i64;
+        
+        // Persist to storage
+        let payload = bytes::Bytes::from(req.payload.clone());
+        let offset = self.storage.append(&req.topic, self.partition_id as i32, &payload)
+            .ok_or_else(|| Status::internal("Failed to append to storage"))?;
 
         // Create consume response for broadcasting
         let response = ConsumeResponse {

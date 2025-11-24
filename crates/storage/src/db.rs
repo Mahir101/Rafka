@@ -5,6 +5,73 @@ use parking_lot::RwLock;
 use std::collections::VecDeque;
 use std::time::{SystemTime, Duration};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::fs::{File, OpenOptions};
+use std::io::{self, Write, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use serde::{Serialize, Deserialize};
+use bincode;
+
+// Add WalLog struct
+pub(crate) struct WalLog {
+    file: std::sync::Mutex<io::BufWriter<File>>,
+    path: PathBuf,
+}
+
+impl WalLog {
+    pub fn new(path: PathBuf) -> io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .read(true)
+            .open(&path)?;
+            
+        Ok(Self {
+            file: std::sync::Mutex::new(io::BufWriter::new(file)),
+            path,
+        })
+    }
+
+    pub fn append(&self, entry: &MessageEntry) -> io::Result<()> {
+        let mut file = self.file.lock().unwrap();
+        let encoded: Vec<u8> = bincode::serialize(entry).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        // Write length prefix
+        let len = encoded.len() as u64;
+        println!("WAL: Writing entry of size {} bytes (payload size: {})", len, entry.payload.len());
+        file.write_all(&len.to_le_bytes())?;
+        // Write data
+        file.write_all(&encoded)?;
+        file.flush()?;
+        println!("WAL: Flushed to disk");
+        Ok(())
+    }
+
+    pub fn read_all(&self) -> io::Result<Vec<MessageEntry>> {
+        let mut file = File::open(&self.path)?;
+        let mut entries = Vec::new();
+        let mut buffer = [0u8; 8]; // For length prefix
+
+        loop {
+            match file.read_exact(&mut buffer) {
+                Ok(_) => {
+                    let len = u64::from_le_bytes(buffer) as usize;
+                    let mut data = vec![0u8; len];
+                    file.read_exact(&mut data)?;
+                    let entry: MessageEntry = bincode::deserialize(&data)
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    entries.push(entry);
+                }
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(entries)
+    }
+}
+
 
 // Add RetentionPolicy struct definition at the top
 #[derive(Clone, Copy, Debug)]
@@ -32,23 +99,47 @@ pub struct StoredMessage {
 }
 
 // Private implementation
-#[derive(Clone)]
-struct MessageEntry {
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct MessageEntry {
     offset: i64,
-    payload: Bytes,
+    #[serde(with = "serde_bytes")]
+    payload: Vec<u8>, // Changed from Bytes to Vec<u8> for easy serialization
     timestamp: SystemTime,
     partition_id: i32,
+    #[serde(skip)]
     acknowledged_by: DashMap<String, bool>,
 }
+
+mod serde_bytes {
+    use serde::{Serializer, Deserializer};
+    use bytes::Bytes;
+
+    pub fn serialize<S>(data: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bytes(data)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s: &[u8] = serde::Deserialize::deserialize(deserializer)?;
+        Ok(s.to_vec())
+    }
+}
+
 
 impl MessageEntry {
     fn to_stored_message(&self) -> StoredMessage {
         StoredMessage {
             offset: self.offset,
-            payload: self.payload.clone(),
+            payload: Bytes::from(self.payload.clone()),
             timestamp: self.timestamp,
             partition_id: self.partition_id,
         }
+
     }
 }
 
@@ -58,17 +149,48 @@ struct PartitionQueue {
     next_offset: RwLock<i64>,
     retention_policy: RetentionPolicy,
     current_size: AtomicUsize,
+    wal: Option<Arc<WalLog>>,
 }
 
+
 impl PartitionQueue {
-    fn new(retention_policy: RetentionPolicy) -> Self {
+    fn new(retention_policy: RetentionPolicy, topic: &str, partition_id: i32) -> Self {
+        let mut messages = VecDeque::new();
+        let mut next_offset = 0;
+        let mut current_size = 0;
+        
+        // Initialize WAL
+        let wal_path = PathBuf::from("data").join(topic).join(format!("partition-{}.log", partition_id));
+        let wal = match WalLog::new(wal_path) {
+            Ok(w) => {
+                // Recover from WAL
+                if let Ok(entries) = w.read_all() {
+                    println!("Recovered {} messages for {}/{}", entries.len(), topic, partition_id);
+                    for entry in entries {
+                        if entry.offset >= next_offset {
+                            next_offset = entry.offset + 1;
+                        }
+                        current_size += entry.payload.len();
+                        messages.push_back(entry);
+                    }
+                }
+                Some(Arc::new(w))
+            },
+            Err(e) => {
+                println!("Failed to initialize WAL for {}/{}: {}", topic, partition_id, e);
+                None
+            }
+        };
+
         Self {
-            messages: RwLock::new(VecDeque::new()),
-            next_offset: RwLock::new(0),
+            messages: RwLock::new(messages),
+            next_offset: RwLock::new(next_offset),
             retention_policy,
-            current_size: AtomicUsize::new(0),
+            current_size: AtomicUsize::new(current_size),
+            wal,
         }
     }
+
 
     fn append(&self, payload: Bytes, partition_id: i32) -> i64 {
         let mut messages = self.messages.write();
@@ -79,11 +201,19 @@ impl PartitionQueue {
 
         let entry = MessageEntry {
             offset,
-            payload: payload.clone(),
+            payload: payload.to_vec(),
             timestamp: SystemTime::now(),
             partition_id,
             acknowledged_by: DashMap::new(),
         };
+
+        // Write to WAL
+        if let Some(wal) = &self.wal {
+            if let Err(e) = wal.append(&entry) {
+                println!("Failed to write to WAL: {}", e);
+            }
+        }
+
 
         // Update current size
         self.current_size.fetch_add(payload.len(), Ordering::SeqCst);
@@ -169,8 +299,9 @@ impl Storage {
 
     pub fn create_partition(&self, topic: &str, partition_id: i32) -> bool {
         if let Some(partitions) = self.topics.get(topic) {
-            partitions.insert(partition_id, Arc::new(PartitionQueue::new(*self.retention_policy.read())));
+            partitions.insert(partition_id, Arc::new(PartitionQueue::new(*self.retention_policy.read(), topic, partition_id)));
             true
+
         } else {
             false
         }
@@ -181,9 +312,11 @@ impl Storage {
             if let Some(queue) = partitions.get(&partition_id) {
                 Some(queue.append(message.clone(), partition_id))
             } else {
+                println!("Storage: Partition {} not found for topic {}", partition_id, topic);
                 None
             }
         } else {
+            println!("Storage: Topic {} not found", topic);
             None
         }
     }
