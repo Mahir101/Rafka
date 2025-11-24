@@ -50,3 +50,14 @@ members = [
 ]
 
 
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+
+[workspace.lints.clippy]
+enum_glob_use = "deny"
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "warn"
