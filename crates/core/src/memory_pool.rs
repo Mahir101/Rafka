@@ -34,7 +34,7 @@ impl<T: Default + Send + Sync + 'static> MessagePool<T> {
     }
 
     /// Return a message to the pool
-    async fn return_message(&self, mut message: T) {
+    pub async fn return_message(&self, mut message: T) {
         let mut pool = self.pool.lock().await;
         
         if pool.len() < self.max_size {
@@ -59,12 +59,12 @@ impl<T: Send + Sync + 'static> Clone for MessagePool<T> {
 }
 
 /// Wrapper for pooled message that automatically returns to pool
-pub struct PooledMessage<T: Send + Sync + 'static> {
+pub struct PooledMessage<T: Default + Send + Sync + 'static> {
     message: Option<T>,
     pool: MessagePool<T>,
 }
 
-impl<T: Send + Sync + 'static> PooledMessage<T> {
+impl<T: Default + Send + Sync + 'static> PooledMessage<T> {
     pub fn get(&self) -> &T {
         self.message.as_ref().unwrap()
     }
@@ -74,13 +74,13 @@ impl<T: Send + Sync + 'static> PooledMessage<T> {
     }
 }
 
-impl<T: Send + Sync + 'static> Drop for PooledMessage<T> {
+impl<T: Default + Send + Sync + 'static> Drop for PooledMessage<T> {
     fn drop(&mut self) {
         if let Some(message) = self.message.take() {
             let pool = self.pool.clone();
             tokio::spawn(async move {
-                // Just drop the message for now - we'll implement proper pooling later
-                drop(message);
+                // Return message to pool using the return_message method
+                pool.return_message(message).await;
             });
         }
     }

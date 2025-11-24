@@ -15,6 +15,28 @@ Rafka is a blazing-fast, experimental distributed asynchronous message broker in
 - **Real-time Metrics**: Built-in monitoring and performance metrics
 - **Modular Design**: Clean separation of concerns across multiple crates
 
+## 🆚 Rafka vs Apache Kafka Feature Comparison
+
+| Feature | Apache Kafka | Rafka (Current) | Status |
+|---------|--------------|-----------------|--------|
+| **Storage** | Disk-based (Persistent) | In-Memory (Volatile) | ❌ Missing |
+| **Architecture** | Leader/Follower (Zookeeper/KRaft) | P2P Mesh / Distributed | 🔄 Different Approach |
+| **Consumption Model** | Consumer Groups (Load Balancing) | Pub/Sub (Broadcast to all) | ❌ Missing |
+| **Replication** | Multi-replica with ISR | P2P Forwarding (No redundancy) | ❌ Missing |
+| **Message Safety** | WAL (Write Ahead Log) | Memory-only | ❌ Missing |
+| **Transactions** | Exactly-once semantics | At-most-once / At-least-once | ❌ Missing |
+| **Compaction** | Log Compaction | Retention only | ❌ Missing |
+| **Ecosystem** | Connect, Streams, Schema Registry | Core Broker only | ❌ Missing |
+
+### 🔍 Missing Backend Features Detail
+
+1.  **Disk-based Persistence**: Rafka currently stores all messages in RAM. If the process restarts, all data is lost. Kafka uses a Write-Ahead Log (WAL) on disk for durability.
+2.  **Consumer Groups**: Kafka allows a group of consumers to share the load of a topic, with each partition being consumed by only one member of the group. Rafka currently broadcasts every message to every connected consumer (Pub/Sub model).
+3.  **Replication & High Availability**: Kafka replicates partitions across multiple brokers so that if one fails, another can take over. Rafka has P2P forwarding but does not yet store copies of data on multiple nodes.
+4.  **Log Compaction**: Kafka can keep only the latest value for a key, which is useful for state stores. Rafka only supports time/size-based retention.
+5.  **Transactions**: Rafka does not support atomic writes across multiple partitions/topics.
+
+
 ## 🏗️ Architecture Overview
 
 ### System Architecture Diagram

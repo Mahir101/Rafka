@@ -69,6 +69,12 @@ impl ZeroCopyProcessor {
             return Err("Batch size exceeded".to_string());
         }
 
+        // Clear input buffer and add messages
+        self.input_buffer.clear().await;
+        for message in messages {
+            self.input_buffer.append(message).await?;
+        }
+
         // Clear output buffer
         self.output_buffer.clear().await;
 
