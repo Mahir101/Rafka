@@ -263,7 +263,8 @@ impl Broker {
         // Persist to storage
         let payload = bytes::Bytes::from(req.payload.clone());
         let offset = self.storage.append(&req.topic, self.partition_id as i32, &payload)
-            .ok_or_else(|| Status::internal("Failed to append to storage"))?;
+            .await
+            .map_err(|e| Status::internal(format!("Failed to append to storage: {}", e)))?;
 
         let response = ConsumeResponse {
             message_id: message_id.clone(),
@@ -329,11 +330,13 @@ impl Broker {
             // Persist to storage
             println!("Broker: Persisting message to storage: topic={}, partition={}", req.topic, self.partition_id);
             let payload = bytes::Bytes::from(req.payload.clone());
-            let offset = self.storage.append(&req.topic, self.partition_id as i32, &payload)
-                .unwrap_or_else(|| {
-                    println!("Failed to append to storage in batch");
+            let offset = match self.storage.append(&req.topic, self.partition_id as i32, &payload).await {
+                Ok(off) => off,
+                Err(e) => {
+                    println!("Failed to append to storage in batch: {}", e);
                     self.message_counter.fetch_add(1, Ordering::SeqCst) as i64
-                });
+                }
+            };
             optimized_msg.offset = offset;
 
             let response = ConsumeResponse {
@@ -418,8 +421,13 @@ impl Broker {
                             optimized_msg.partition = partition_id;
                             
                             let payload = bytes::Bytes::from(req.payload.clone());
-                            let offset = storage.append(&req.topic, partition_id as i32, &payload)
-                                .unwrap_or_else(|| message_counter.fetch_add(1, Ordering::SeqCst) as i64);
+                            let offset = match storage.append(&req.topic, partition_id as i32, &payload).await {
+                                Ok(off) => off,
+                                Err(e) => {
+                                    println!("Background flusher: Failed to append: {}", e);
+                                    message_counter.fetch_add(1, Ordering::SeqCst) as i64
+                                }
+                            };
                             optimized_msg.offset = offset;
 
                             let response = ConsumeResponse {
@@ -457,7 +465,7 @@ impl Broker {
         key.bytes().fold(0u32, |acc, b| acc.wrapping_add(b as u32))
     }
 
-    async fn ensure_topic(&self, topic: &str) {
+    async fn ensure_topic(&self, topic: &str) -> Result<(), String> {
         let topics = self.topics.read().await;
         if !topics.contains_key(topic) {
             drop(topics);
@@ -465,9 +473,10 @@ impl Broker {
             if !topics.contains_key(topic) {
                 topics.insert(topic.to_string(), HashSet::new());
                 self.storage.create_topic(topic.to_string());
-                self.storage.create_partition(topic, self.partition_id as i32);
+                self.storage.create_partition(topic, self.partition_id as i32).await?;
             }
         }
+        Ok(())
     }
 
     async fn _publish_internal(&self, response: ConsumeResponse) -> Result<(), broadcast::error::SendError<ConsumeResponse>> {
@@ -708,9 +717,13 @@ impl Broker {
             topic: optimized_message.topic.clone(),
             payload: processed_payload.clone(),
             sent_at: optimized_message.timestamp as i64,
-
-            offset: self.storage.append(&optimized_message.topic, partition_id as i32, &bytes::Bytes::from(optimized_message.payload.clone()))
-                .unwrap_or_else(|| self.message_counter.fetch_add(1, Ordering::SeqCst) as i64),
+            offset: match self.storage.append(&optimized_message.topic, partition_id as i32, &bytes::Bytes::from(optimized_message.payload.clone())).await {
+                Ok(off) => off,
+                Err(e) => {
+                    println!("Failed to append in handle_local_message: {}", e);
+                    self.message_counter.fetch_add(1, Ordering::SeqCst) as i64
+                }
+            },
             partition: partition_id as i32,
         };
         
@@ -774,7 +787,9 @@ impl BrokerService for Broker {
             return self.forward_message_to_partition(req, target_partition).await;
         }
 
-        self.ensure_topic(&req.topic).await;
+        if let Err(e) = self.ensure_topic(&req.topic).await {
+            return Err(Status::internal(format!("Failed to ensure topic: {}", e)));
+        }
         
         // Add message to batcher for performance optimization
         println!("Broker: Adding message to batcher");
@@ -841,7 +856,9 @@ impl BrokerService for Broker {
     ) -> Result<Response<SubscribeResponse>, Status> {
         let req = request.into_inner();
         
-        self.ensure_topic(&req.topic).await;
+        if let Err(e) = self.ensure_topic(&req.topic).await {
+            return Err(Status::internal(format!("Failed to ensure topic: {}", e)));
+        }
         
         let mut topics = self.topics.write().await;
         if let Some(subscribers) = topics.get_mut(&req.topic) {
@@ -1011,14 +1028,17 @@ impl BrokerService for Broker {
         }
 
         // Store the forwarded message
-        self.ensure_topic(&req.topic).await;
+        if let Err(e) = self.ensure_topic(&req.topic).await {
+            return Err(Status::internal(format!("Failed to ensure topic: {}", e)));
+        }
         
         let message_id = Uuid::new_v4().to_string();
         
         // Persist to storage
         let payload = bytes::Bytes::from(req.payload.clone());
         let offset = self.storage.append(&req.topic, self.partition_id as i32, &payload)
-            .ok_or_else(|| Status::internal("Failed to append to storage"))?;
+            .await
+            .map_err(|e| Status::internal(format!("Failed to append to storage: {}", e)))?;
 
         // Create consume response for broadcasting
         let response = ConsumeResponse {

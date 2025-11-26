@@ -915,6 +915,7 @@ dependencies = [
  "parking_lot",
  "rafka-core",
  "serde",
+ "tokio",
  "tracing",
  "uuid",
 ]

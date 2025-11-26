@@ -11,10 +11,10 @@ use std::path::{Path, PathBuf};
 use serde::{Serialize, Deserialize};
 use bincode;
 
-// Add WalLog struct
+// WalLog with async IO and separate read/write handles
 pub(crate) struct WalLog {
-    file: std::sync::Mutex<io::BufWriter<File>>,
-    path: PathBuf,
+    write_path: PathBuf,
+    next_entry_id: AtomicUsize,
 }
 
 impl WalLog {
@@ -23,71 +23,97 @@ impl WalLog {
             std::fs::create_dir_all(parent)?;
         }
         
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .read(true)
-            .open(&path)?;
+        // Ensure file exists
+        if !path.exists() {
+            std::fs::File::create(&path)?;
+        }
             
         Ok(Self {
-            file: std::sync::Mutex::new(io::BufWriter::new(file)),
-            path,
+            write_path: path,
+            next_entry_id: AtomicUsize::new(0),
         })
     }
 
-    pub fn append(&self, entry: &MessageEntry) -> io::Result<()> {
-        let mut file = self.file.lock().unwrap();
-        let encoded: Vec<u8> = bincode::serialize(entry).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        // Write length prefix
+    pub async fn append(&self, entry: &MessageEntry) -> io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        
+        let encoded: Vec<u8> = bincode::serialize(entry)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        
         let len = encoded.len() as u64;
-        println!("WAL: Writing entry of size {} bytes (payload size: {})", len, entry.payload.len());
-        file.write_all(&len.to_le_bytes())?;
-        // Write data
-        file.write_all(&encoded)?;
-        file.flush()?;
-        println!("WAL: Flushed to disk");
+        
+        // Use tokio::fs for async IO to avoid blocking the runtime
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.write_path)
+            .await?;
+        
+        file.write_all(&len.to_le_bytes()).await?;
+        file.write_all(&encoded).await?;
+        file.flush().await?;
+        
+        self.next_entry_id.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
-    pub fn read_all(&self) -> io::Result<Vec<MessageEntry>> {
-        println!("WAL: Reading from {:?}", self.path);
-        let mut file = File::open(&self.path)?;
-        let metadata = file.metadata()?;
-        println!("WAL: File size: {} bytes", metadata.len());
+    pub async fn read_all(&self) -> io::Result<Vec<MessageEntry>> {
+        use tokio::io::AsyncReadExt;
+        
+        let mut file = tokio::fs::File::open(&self.write_path).await?;
+        let metadata = file.metadata().await?;
         
         let mut entries = Vec::new();
-        let mut buffer = [0u8; 8]; // For length prefix
+        let mut buffer = [0u8; 8];
 
         loop {
-            match file.read_exact(&mut buffer) {
+            match file.read_exact(&mut buffer).await {
                 Ok(_) => {
                     let len = u64::from_le_bytes(buffer) as usize;
-                    println!("WAL: Found entry with length: {}", len);
                     let mut data = vec![0u8; len];
-                    if let Err(e) = file.read_exact(&mut data) {
-                        println!("WAL: Failed to read payload of size {}: {}", len, e);
-                        return Err(e);
-                    }
+                    file.read_exact(&mut data).await?;
+                    
                     match bincode::deserialize(&data) {
                         Ok(entry) => entries.push(entry),
                         Err(e) => {
-                            println!("WAL: Failed to deserialize entry: {}", e);
-                            return Err(io::Error::new(io::ErrorKind::Other, e));
+                            return Err(io::Error::new(io::ErrorKind::InvalidData, e));
                         }
                     }
                 }
-                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                    println!("WAL: Reached EOF");
-                    break;
-                },
-                Err(e) => {
-                    println!("WAL: Error reading file: {}", e);
-                    return Err(e);
-                },
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(e) => return Err(e),
             }
         }
-        println!("WAL: Read {} entries", entries.len());
+        
         Ok(entries)
+    }
+    
+    // Compact WAL by removing old entries
+    pub async fn compact(&self, keep_from_offset: i64) -> io::Result<()> {
+        let entries = self.read_all().await?;
+        let kept_entries: Vec<_> = entries.into_iter()
+            .filter(|e| e.offset >= keep_from_offset)
+            .collect();
+        
+        // Write to temp file
+        let temp_path = self.write_path.with_extension("tmp");
+        {
+            use tokio::io::AsyncWriteExt;
+            let mut temp_file = tokio::fs::File::create(&temp_path).await?;
+            
+            for entry in &kept_entries {
+                let encoded: Vec<u8> = bincode::serialize(entry)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                let len = encoded.len() as u64;
+                temp_file.write_all(&len.to_le_bytes()).await?;
+                temp_file.write_all(&encoded).await?;
+            }
+            temp_file.flush().await?;
+        }
+        
+        // Atomic rename
+        tokio::fs::rename(&temp_path, &self.write_path).await?;
+        Ok(())
     }
 }
 
@@ -117,21 +143,20 @@ pub struct StoredMessage {
     pub partition_id: i32,
 }
 
-// Private implementation
+// Private implementation - using Bytes for zero-copy
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct MessageEntry {
     offset: i64,
     #[serde(with = "serde_bytes")]
-    payload: Vec<u8>, // Changed from Bytes to Vec<u8> for easy serialization
+    payload: Vec<u8>, // Keep as Vec for serialization, convert to Bytes on read
     timestamp: SystemTime,
     partition_id: i32,
-    #[serde(skip)]
-    acknowledged_by: DashMap<String, bool>,
+    // Store acknowledgments persistently
+    acknowledged_by: std::collections::HashSet<String>,
 }
 
 mod serde_bytes {
     use serde::{Serializer, Deserializer};
-    use bytes::Bytes;
 
     pub fn serialize<S>(data: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -154,17 +179,18 @@ impl MessageEntry {
     fn to_stored_message(&self) -> StoredMessage {
         StoredMessage {
             offset: self.offset,
-            payload: Bytes::from(self.payload.clone()),
+            payload: Bytes::from(self.payload.clone()), // Single clone on read
             timestamp: self.timestamp,
             partition_id: self.partition_id,
         }
-
     }
 }
 
-// Represents a partition's message queue
+// Represents a partition's message queue with offset indexing
 struct PartitionQueue {
     messages: RwLock<VecDeque<MessageEntry>>,
+    // O(1) offset lookup index
+    offset_index: RwLock<std::collections::HashMap<i64, usize>>,
     next_offset: RwLock<i64>,
     retention_policy: RetentionPolicy,
     current_size: AtomicUsize,
@@ -175,6 +201,7 @@ struct PartitionQueue {
 impl PartitionQueue {
     fn new(retention_policy: RetentionPolicy, topic: &str, partition_id: i32) -> Self {
         let mut messages = VecDeque::new();
+        let mut offset_index = std::collections::HashMap::new();
         let mut next_offset = 0;
         let mut current_size = 0;
         
@@ -182,88 +209,122 @@ impl PartitionQueue {
         let wal_path = PathBuf::from("data").join(topic).join(format!("partition-{}.log", partition_id));
         let wal = match WalLog::new(wal_path) {
             Ok(w) => {
-                // Recover from WAL
-                if let Ok(entries) = w.read_all() {
-                    println!("Recovered {} messages for {}/{}", entries.len(), topic, partition_id);
-                    for entry in entries {
-                        if entry.offset >= next_offset {
-                            next_offset = entry.offset + 1;
-                        }
-                        current_size += entry.payload.len();
-                        messages.push_back(entry);
-                    }
-                }
+                // Recover from WAL - must be sync for constructor
+                // We'll do async recovery separately
                 Some(Arc::new(w))
             },
             Err(e) => {
-                println!("Failed to initialize WAL for {}/{}: {}", topic, partition_id, e);
+                eprintln!("Failed to initialize WAL for {}/{}: {}", topic, partition_id, e);
                 None
             }
         };
-
+        
         Self {
             messages: RwLock::new(messages),
+            offset_index: RwLock::new(offset_index),
             next_offset: RwLock::new(next_offset),
             retention_policy,
             current_size: AtomicUsize::new(current_size),
             wal,
         }
     }
+    
+    // Async recovery method to be called after construction
+    async fn recover(&self) -> io::Result<()> {
+        if let Some(ref wal) = self.wal {
+            let entries = wal.read_all().await?;
+            let mut messages = self.messages.write();
+            let mut offset_index = self.offset_index.write();
+            let mut next_offset = self.next_offset.write();
+            let mut total_size = 0;
+            
+            for (idx, entry) in entries.into_iter().enumerate() {
+                if entry.offset >= *next_offset {
+                    *next_offset = entry.offset + 1;
+                }
+                total_size += entry.payload.len();
+                offset_index.insert(entry.offset, idx);
+                messages.push_back(entry);
+            }
+            
+            self.current_size.store(total_size, Ordering::SeqCst);
+        }
+        Ok(())
+    }
 
-
-    fn append(&self, payload: Bytes, partition_id: i32) -> i64 {
-        let mut messages = self.messages.write();
-        let mut next_offset = self.next_offset.write();
-        
-        let offset = *next_offset;
-        *next_offset += 1;
+    // Async append with proper error handling
+    async fn append(&self, payload: Bytes, partition_id: i32) -> Result<i64, io::Error> {
+        let offset = {
+            let mut next_offset = self.next_offset.write();
+            let offset = *next_offset;
+            *next_offset += 1;
+            offset
+        };
 
         let entry = MessageEntry {
             offset,
-            payload: payload.to_vec(),
+            payload: payload.to_vec(), // Single conversion
             timestamp: SystemTime::now(),
             partition_id,
-            acknowledged_by: DashMap::new(),
+            acknowledged_by: std::collections::HashSet::new(),
         };
 
-        // Write to WAL
+        // Write to WAL first (durability)
         if let Some(wal) = &self.wal {
-            println!("WAL: Appending message to WAL for partition {}", partition_id);
-            if let Err(e) = wal.append(&entry) {
-                println!("Failed to write to WAL: {}", e);
-            }
-        } else {
-            println!("WAL: No WAL configured for partition {}", partition_id);
+            wal.append(&entry).await?; // Propagate errors
         }
-
-        // Update current size
-        self.current_size.fetch_add(payload.len(), Ordering::SeqCst);
         
-        messages.push_back(entry);
+        // Then update memory
+        let payload_len = entry.payload.len();
+        {
+            let mut messages = self.messages.write();
+            let mut offset_index = self.offset_index.write();
+            let idx = messages.len();
+            offset_index.insert(offset, idx);
+            messages.push_back(entry);
+        }
+        // Update current size atomically
+        self.current_size.fetch_add(payload_len, Ordering::SeqCst);
+        
+        // Enforce retention policy
         self.enforce_retention_policy();
         
-        offset
+        Ok(offset)
     }
 
     fn enforce_retention_policy(&self) {
         let mut messages = self.messages.write();
+        let mut offset_index = self.offset_index.write();
         let now = SystemTime::now();
-        let mut size = self.current_size.load(Ordering::SeqCst);
+        let mut removed_size = 0;
 
         // Remove old messages
         while let Some(entry) = messages.front() {
-            if let Ok(age) = now.duration_since(entry.timestamp) {
-                if age > self.retention_policy.max_age || size > self.retention_policy.max_bytes {
-                    if let Some(removed) = messages.pop_front() {
-                        size -= removed.payload.len();
-                    }
-                    continue;
+            let should_remove = if let Ok(age) = now.duration_since(entry.timestamp) {
+                age > self.retention_policy.max_age || 
+                self.current_size.load(Ordering::SeqCst) > self.retention_policy.max_bytes
+            } else {
+                false
+            };
+            
+            if should_remove {
+                if let Some(removed) = messages.pop_front() {
+                    offset_index.remove(&removed.offset);
+                    removed_size += removed.payload.len();
                 }
+            } else {
+                break;
             }
-            break;
+        }
+        
+        // Rebuild index after removal
+        offset_index.clear();
+        for (idx, entry) in messages.iter().enumerate() {
+            offset_index.insert(entry.offset, idx);
         }
 
-        self.current_size.store(size, Ordering::SeqCst);
+        // Atomically update size
+        self.current_size.fetch_sub(removed_size, Ordering::SeqCst);
     }
 
     fn read_from(&self, start_offset: i64, max_messages: usize) -> Vec<MessageEntry> {
@@ -276,21 +337,42 @@ impl PartitionQueue {
             .collect()
     }
 
-    fn acknowledge(&self, offset: i64, consumer_id: &str) {
-        let messages = self.messages.read();
-        if let Some(entry) = messages.iter().find(|e| e.offset == offset) {
-            entry.acknowledged_by.insert(consumer_id.to_string(), true);
+    // O(1) acknowledgment using offset index
+    fn acknowledge(&self, offset: i64, consumer_id: &str) -> bool {
+        let offset_index = self.offset_index.read();
+        if let Some(&idx) = offset_index.get(&offset) {
+            drop(offset_index); // Release read lock
+            let mut messages = self.messages.write();
+            if let Some(entry) = messages.get_mut(idx) {
+                entry.acknowledged_by.insert(consumer_id.to_string());
+                return true;
+            }
         }
+        false
     }
 
     fn cleanup_acknowledged(&self) {
         let mut messages = self.messages.write();
-        messages.retain(|msg| msg.acknowledged_by.is_empty());
-        // Update size after cleanup
-        self.current_size.store(
-            messages.iter().map(|msg| msg.payload.len()).sum(),
-            Ordering::SeqCst
-        );
+        let mut offset_index = self.offset_index.write();
+        let mut removed_size = 0;
+        
+        messages.retain(|msg| {
+            let should_keep = msg.acknowledged_by.is_empty();
+            if !should_keep {
+                removed_size += msg.payload.len();
+                offset_index.remove(&msg.offset);
+            }
+            should_keep
+        });
+        
+        // Rebuild index
+        offset_index.clear();
+        for (idx, entry) in messages.iter().enumerate() {
+            offset_index.insert(entry.offset, idx);
+        }
+        
+        // Atomically decrement size
+        self.current_size.fetch_sub(removed_size, Ordering::SeqCst);
     }
 }
 
@@ -318,27 +400,33 @@ impl Storage {
         self.topics.insert(topic, DashMap::new());
     }
 
-    pub fn create_partition(&self, topic: &str, partition_id: i32) -> bool {
+    pub async fn create_partition(&self, topic: &str, partition_id: i32) -> Result<(), String> {
         if let Some(partitions) = self.topics.get(topic) {
-            partitions.insert(partition_id, Arc::new(PartitionQueue::new(*self.retention_policy.read(), topic, partition_id)));
-            true
-
+            let queue = Arc::new(PartitionQueue::new(*self.retention_policy.read(), topic, partition_id));
+            
+            // Recover from WAL asynchronously
+            if let Err(e) = queue.recover().await {
+                return Err(format!("Failed to recover partition {}/{}: {}", topic, partition_id, e));
+            }
+            
+            partitions.insert(partition_id, queue);
+            Ok(())
         } else {
-            false
+            Err(format!("Topic {} does not exist", topic))
         }
     }
 
-    pub fn append(&self, topic: &str, partition_id: i32, message: &Bytes) -> Option<i64> {
+    pub async fn append(&self, topic: &str, partition_id: i32, message: &Bytes) -> Result<i64, String> {
         if let Some(partitions) = self.topics.get(topic) {
             if let Some(queue) = partitions.get(&partition_id) {
-                Some(queue.append(message.clone(), partition_id))
+                queue.append(message.clone(), partition_id)
+                    .await
+                    .map_err(|e| format!("Failed to append message: {}", e))
             } else {
-                println!("Storage: Partition {} not found for topic {}", partition_id, topic);
-                None
+                Err(format!("Partition {} not found for topic {}", partition_id, topic))
             }
         } else {
-            println!("Storage: Topic {} not found", topic);
-            None
+            Err(format!("Topic {} not found", topic))
         }
     }
 
@@ -462,17 +550,17 @@ pub struct StorageMetrics {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_basic_operations() {
+    #[tokio::test]
+    async fn test_basic_operations() {
         let storage = Storage::new();
         
         // Create topic and partition
         storage.create_topic("test".to_string());
-        assert!(storage.create_partition("test", 0));
+        storage.create_partition("test", 0).await.expect("Failed to create partition");
 
         // Append and read message
         let message = Bytes::from("hello world");
-        let offset = storage.append("test", 0, &message).unwrap();
+        let offset = storage.append("test", 0, &message).await.expect("Failed to append");
         
         let read_messages = storage.read("test", 0, offset).unwrap();
         assert_eq!(read_messages[0].payload, message);
